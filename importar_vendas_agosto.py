@@ -1,10 +1,10 @@
 """
 importar_vendas_agosto.py - Importa os lançamentos diários de vendas de
-agosto/2026 (26 registros, sem quantidade de clientes atendidos).
+agosto/2026 (26 registros, sem quantidade de pedidos).
 
 Usa db.upsert_venda_valor(), que só grava o valor vendido do dia e NÃO mexe na
-quantidade de clientes já lançada para aquele vendedor/dia (se o dia ainda não
-existir, entra com 0 clientes — lance depois em "👥 Lançar clientes atendidos
+quantidade de pedidos já lançados para aquele vendedor/dia (se o dia ainda não
+existir, entra com 0 pedidos — lance depois em "👥 Lançar pedidos
 por dia" no app).
 
 Pré-requisito: os vendedores já devem estar cadastrados.

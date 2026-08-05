@@ -6,7 +6,7 @@ Chromium/wkhtmltopdf), o que garante compatibilidade com o deploy no Streamlit
 Community Cloud sem passos extras de instalação de sistema.
 
 Cada PDF traz: dados do vendedor, KPIs do mês (meta, realizado, atingimento,
-clientes atendidos, ticket médio individual) e um gráfico de barras com o
+pedidos, ticket médio individual) e um gráfico de barras com o
 realizado diário no período.
 """
 import io
@@ -34,14 +34,14 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes):
     vendas = db.get_vendas_vendedor_mes(vendedor_id, ano, mes)
     realizado = float(vendas["valor_realizado"].sum()) if not vendas.empty else 0.0
     realizado += db.get_realizado_manual_vendedor(vendedor_id, ano, mes)
-    clientes = int(vendas["qtd_clientes"].sum()) if not vendas.empty else 0
-    clientes += db.get_clientes_manual_vendedor(vendedor_id, ano, mes)
+    pedidos = int(vendas["qtd_pedidos"].sum()) if not vendas.empty else 0
+    pedidos += db.get_pedidos_manual_vendedor(vendedor_id, ano, mes)
     atingimento = (realizado / meta * 100) if meta > 0 else 0.0
-    ticket = (realizado / clientes) if clientes > 0 else 0.0
+    ticket = (realizado / pedidos) if pedidos > 0 else 0.0
     return {
         "meta": meta,
         "realizado": realizado,
-        "clientes": clientes,
+        "pedidos": pedidos,
         "atingimento": atingimento,
         "ticket": ticket,
         "vendas": vendas,
@@ -96,7 +96,7 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
         ["Meta do mês", db.formatar_moeda(kpis["meta"])],
         ["Realizado do mês", db.formatar_moeda(kpis["realizado"])],
         ["Atingimento (%)", f"{kpis['atingimento']:.1f}%  ({db.label_semaforo(kpis['atingimento'])})"],
-        ["Clientes atendidos", str(kpis["clientes"])],
+        ["Pedidos", str(kpis["pedidos"])],
         ["Ticket médio individual", db.formatar_moeda(kpis["ticket"])],
     ]
     tabela = Table(dados_tabela, colWidths=[8.5 * cm, 7.5 * cm])

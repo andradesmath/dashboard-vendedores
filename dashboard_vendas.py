@@ -422,43 +422,43 @@ with tab_metas:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("👥 Clientes atendidos do mês")
+    st.subheader("🧾 Pedidos do mês")
     st.caption(
-        "Total de clientes atendidos no mês, quando não há quebra diária (ex.: meses "
+        "Total de pedidos no mês, quando não há quebra diária (ex.: meses "
         "históricos ou fechamento mensal). Some ao total já lançado dia a dia, se houver."
     )
-    vendedores_df_clientes_mes = db.get_vendedores(apenas_ativos=True)
-    if vendedores_df_clientes_mes.empty:
+    vendedores_df_pedidos_mes = db.get_vendedores(apenas_ativos=True)
+    if vendedores_df_pedidos_mes.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
-        with st.form("form_clientes_mes"):
+        with st.form("form_pedidos_mes"):
             colm1, colm2, colm3, colm4 = st.columns(4)
             opcoes_vend_cm = {
                 f"{row['nome']} ({row['loja']})": row["id"]
-                for _, row in vendedores_df_clientes_mes.iterrows()
+                for _, row in vendedores_df_pedidos_mes.iterrows()
             }
             with colm1:
-                escolha_vend_cm = st.selectbox("Vendedor *", list(opcoes_vend_cm.keys()), key="sel_clientes_mes")
+                escolha_vend_cm = st.selectbox("Vendedor *", list(opcoes_vend_cm.keys()), key="sel_pedidos_mes")
             with colm2:
                 ano_cm = st.number_input(
-                    "Ano *", min_value=2020, max_value=2035, value=date.today().year, step=1, key="ano_clientes_mes"
+                    "Ano *", min_value=2020, max_value=2035, value=date.today().year, step=1, key="ano_pedidos_mes"
                 )
             with colm3:
                 mes_cm = st.selectbox(
                     "Mês *", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
-                    index=date.today().month - 1, key="mes_clientes_mes",
+                    index=date.today().month - 1, key="mes_pedidos_mes",
                 )
             with colm4:
-                qtd_clientes_mes = st.number_input(
-                    "Clientes atendidos *", min_value=0, step=1, format="%d", key="qtd_clientes_mes"
+                qtd_pedidos_mes = st.number_input(
+                    "Pedidos *", min_value=0, step=1, format="%d", key="qtd_pedidos_mes"
                 )
 
-            enviado_clientes_mes = st.form_submit_button("💾 Salvar clientes do mês")
-            if enviado_clientes_mes:
+            enviado_pedidos_mes = st.form_submit_button("💾 Salvar pedidos do mês")
+            if enviado_pedidos_mes:
                 vendedor_id_cm = opcoes_vend_cm[escolha_vend_cm]
-                db.upsert_clientes_mensal(vendedor_id_cm, int(ano_cm), int(mes_cm), int(qtd_clientes_mes))
+                db.upsert_pedidos_mensal(vendedor_id_cm, int(ano_cm), int(mes_cm), int(qtd_pedidos_mes))
                 st.success(
-                    f"{qtd_clientes_mes} cliente(s) atendido(s) lançado(s) para {escolha_vend_cm} "
+                    f"{qtd_pedidos_mes} pedido(s) lançado(s) para {escolha_vend_cm} "
                     f"em {db.MESES_PT[mes_cm]}/{ano_cm}."
                 )
                 st.session_state.versao_dados += 1
@@ -590,7 +590,7 @@ with tab_metas:
             lambda r: (r["realizado"] / r["valor_meta"] * 100) if r["valor_meta"] > 0 else 0.0, axis=1
         )
         historico["ticket_medio"] = historico.apply(
-            lambda r: (r["realizado"] / r["clientes"]) if r["clientes"] > 0 else 0.0, axis=1
+            lambda r: (r["realizado"] / r["pedidos"]) if r["pedidos"] > 0 else 0.0, axis=1
         )
 
         periodos = (
@@ -618,27 +618,27 @@ with tab_metas:
             bloco_fmt["Ticket Médio"] = bloco_fmt["ticket_medio"].apply(db.formatar_moeda)
             st.dataframe(
                 bloco_fmt[
-                    ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "clientes", "Ticket Médio"]
-                ].rename(columns={"nome": "Vendedor", "loja": "Loja", "clientes": "Clientes Atendidos"}),
+                    ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "pedidos", "Ticket Médio"]
+                ].rename(columns={"nome": "Vendedor", "loja": "Loja", "pedidos": "Pedidos"}),
                 use_container_width=True,
                 hide_index=True,
             )
 
             meta_total_mes = float(bloco["valor_meta"].sum())
             realizado_total_mes = float(bloco["realizado"].sum())
-            clientes_total_mes = int(bloco["clientes"].sum())
+            pedidos_total_mes = int(bloco["pedidos"].sum())
             atingimento_total_mes = (
                 (realizado_total_mes / meta_total_mes * 100) if meta_total_mes > 0 else 0.0
             )
             ticket_total_mes = (
-                (realizado_total_mes / clientes_total_mes) if clientes_total_mes > 0 else 0.0
+                (realizado_total_mes / pedidos_total_mes) if pedidos_total_mes > 0 else 0.0
             )
 
             st.markdown(
                 f"**Total do mês:** Meta {db.formatar_moeda(meta_total_mes)} · "
                 f"Realizado {db.formatar_moeda(realizado_total_mes)} · "
                 f"Atingimento {atingimento_total_mes:.1f}% · "
-                f"Clientes atendidos {clientes_total_mes} · "
+                f"Pedidos {pedidos_total_mes} · "
                 f"Ticket médio {db.formatar_moeda(ticket_total_mes)}"
             )
             st.markdown("---")
@@ -667,63 +667,63 @@ with tab_lancamentos:
                     "Realizado do dia (R$) *", min_value=0.0, step=50.0, format="%.2f"
                 )
             with col4:
-                qtd_clientes = st.number_input(
-                    "Clientes atendidos *", min_value=0, step=1, format="%d"
+                qtd_pedidos = st.number_input(
+                    "Pedidos *", min_value=0, step=1, format="%d"
                 )
 
             enviado_venda = st.form_submit_button("💾 Salvar lançamento")
             if enviado_venda:
                 vendedor_id = opcoes_vend[escolha_vend_v]
-                db.upsert_venda(vendedor_id, data_venda, float(valor_realizado), int(qtd_clientes))
+                db.upsert_venda(vendedor_id, data_venda, float(valor_realizado), int(qtd_pedidos))
                 st.success(
                     f"Lançamento salvo: {escolha_vend_v} — {data_venda.strftime('%d/%m/%Y')} — "
-                    f"{db.formatar_moeda(valor_realizado)} — {qtd_clientes} cliente(s)."
+                    f"{db.formatar_moeda(valor_realizado)} — {qtd_pedidos} pedido(s)."
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("👥 Lançar clientes atendidos por dia")
+    st.subheader("🧾 Lançar pedidos por dia")
     st.caption(
         "Use isto quando o valor vendido do dia já foi lançado (ou importado) e falta só "
-        "informar os clientes atendidos — não sobrescreve o valor já registrado."
+        "informar os pedidos — não sobrescreve o valor já registrado."
     )
     if vendedores_df.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
-        with st.form("form_clientes_dia", clear_on_submit=True):
+        with st.form("form_pedidos_dia", clear_on_submit=True):
             colc1, colc2, colc3 = st.columns(3)
             opcoes_vend_c = {
                 f"{row['nome']} ({row['loja']})": row["id"] for _, row in vendedores_df.iterrows()
             }
             with colc1:
-                escolha_vend_c = st.selectbox("Vendedor *", list(opcoes_vend_c.keys()), key="sel_clientes_dia")
+                escolha_vend_c = st.selectbox("Vendedor *", list(opcoes_vend_c.keys()), key="sel_pedidos_dia")
             with colc2:
-                data_clientes = st.date_input(
-                    "Data *", value=date.today(), max_value=date.today(), key="data_clientes_dia"
+                data_pedidos = st.date_input(
+                    "Data *", value=date.today(), max_value=date.today(), key="data_pedidos_dia"
                 )
             with colc3:
-                qtd_clientes_dia = st.number_input(
-                    "Clientes atendidos *", min_value=0, step=1, format="%d", key="qtd_clientes_dia"
+                qtd_pedidos_dia = st.number_input(
+                    "Pedidos *", min_value=0, step=1, format="%d", key="qtd_pedidos_dia"
                 )
-            enviado_clientes_dia = st.form_submit_button("💾 Salvar clientes do dia")
-            if enviado_clientes_dia:
+            enviado_pedidos_dia = st.form_submit_button("💾 Salvar pedidos do dia")
+            if enviado_pedidos_dia:
                 vendedor_id_c = opcoes_vend_c[escolha_vend_c]
-                db.upsert_clientes_dia(vendedor_id_c, data_clientes, int(qtd_clientes_dia))
+                db.upsert_pedidos_dia(vendedor_id_c, data_pedidos, int(qtd_pedidos_dia))
                 st.success(
-                    f"Clientes atendidos salvos: {escolha_vend_c} — "
-                    f"{data_clientes.strftime('%d/%m/%Y')} — {qtd_clientes_dia} cliente(s)."
+                    f"Pedidos salvos: {escolha_vend_c} — "
+                    f"{data_pedidos.strftime('%d/%m/%Y')} — {qtd_pedidos_dia} pedido(s)."
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
 
     st.markdown("---")
-    with st.expander("📥 Importar vendas diárias em lote (sem clientes atendidos)"):
+    with st.expander("📥 Importar vendas diárias em lote (sem pedidos)"):
         st.caption(
             "Cole uma linha por lançamento, no formato: Vendedor [TAB] Data (DD/MM/AAAA) [TAB] "
-            "Valor Vendido (R$) — como copiado de uma planilha. Não sobrescreve os clientes "
-            "atendidos já lançados para o mesmo dia; se o dia ainda não existir, entra com 0 "
-            "clientes (lance depois em '👥 Lançar clientes atendidos por dia' acima)."
+            "Valor Vendido (R$) — como copiado de uma planilha. Não sobrescreve os pedidos "
+            "já lançados para o mesmo dia; se o dia ainda não existir, entra com 0 "
+            "pedidos (lance depois em '🧾 Lançar pedidos por dia' acima)."
         )
         texto_venda_lote = st.text_area(
             "Vendas diárias", height=220, key="texto_import_vendas",
@@ -830,8 +830,8 @@ with tab_lancamentos:
         recentes_fmt = recentes.copy()
         recentes_fmt["Realizado (R$)"] = recentes_fmt["valor_realizado"].apply(db.formatar_moeda)
         st.dataframe(
-            recentes_fmt[["id", "nome", "loja", "data", "Realizado (R$)", "qtd_clientes"]].rename(
-                columns={"id": "ID", "nome": "Vendedor", "loja": "Loja", "data": "Data", "qtd_clientes": "Clientes"}
+            recentes_fmt[["id", "nome", "loja", "data", "Realizado (R$)", "qtd_pedidos"]].rename(
+                columns={"id": "ID", "nome": "Vendedor", "loja": "Loja", "data": "Data", "qtd_pedidos": "Pedidos"}
             ),
             use_container_width=True,
             hide_index=True,
@@ -878,7 +878,7 @@ with tab_dashboard:
     metas_df = db.get_metas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     vendas_df = db.get_vendas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     manual_df = db.get_realizado_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
-    clientes_manual_df = db.get_clientes_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    pedidos_manual_df = db.get_pedidos_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
 
     # Alerta de metas não lançadas
     sem_meta = metas_df[metas_df["valor_meta"] == 0]
@@ -898,13 +898,13 @@ with tab_dashboard:
     totais_mes_atual = db.get_totais_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     meta_total = totais_mes_atual["meta"]
     realizado_total = totais_mes_atual["realizado"]
-    clientes_total = totais_mes_atual["clientes"]
+    pedidos_total = totais_mes_atual["pedidos"]
 
     atingimento_pct = (realizado_total / meta_total * 100) if meta_total > 0 else 0.0
     dias_transcorridos = db.dias_uteis_transcorridos(ano_filtro, mes_filtro, dias_uteis_total)
     run_rate_diario = (realizado_total / dias_transcorridos) if dias_transcorridos > 0 else 0.0
     projecao_fechamento = run_rate_diario * dias_uteis_total
-    ticket_medio = (realizado_total / clientes_total) if clientes_total > 0 else 0.0
+    ticket_medio = (realizado_total / pedidos_total) if pedidos_total > 0 else 0.0
     produtividade_diaria = run_rate_diario
 
     cor_pct = db.cor_semaforo(atingimento_pct)
@@ -933,7 +933,7 @@ with tab_dashboard:
 
     st.caption(
         f"Dias úteis transcorridos: {dias_transcorridos} de {dias_uteis_total} | "
-        f"Clientes atendidos no mês: {clientes_total}"
+        f"Pedidos no mês: {pedidos_total}"
     )
 
     st.markdown("---")
@@ -1001,8 +1001,8 @@ with tab_dashboard:
         ranking_fmt["Ticket Médio"] = ranking_fmt["ticket_medio_ind"].apply(db.formatar_moeda)
         st.dataframe(
             ranking_fmt[
-                ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "clientes", "Ticket Médio"]
-            ].rename(columns={"nome": "Nome", "loja": "Loja", "clientes": "Clientes Atendidos"}),
+                ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "pedidos", "Ticket Médio"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja", "pedidos": "Pedidos"}),
             use_container_width=True,
             hide_index=True,
         )
@@ -1143,9 +1143,9 @@ with tab_dashboard:
         totais_loja = db.get_totais_mes(ano_filtro, mes_filtro, loja=loja_nome)
         meta_l = totais_loja["meta"]
         realizado_l = totais_loja["realizado"]
-        clientes_l = totais_loja["clientes"]
+        pedidos_l = totais_loja["pedidos"]
         atingimento_l = (realizado_l / meta_l * 100) if meta_l > 0 else 0.0
-        ticket_l = (realizado_l / clientes_l) if clientes_l > 0 else 0.0
+        ticket_l = (realizado_l / pedidos_l) if pedidos_l > 0 else 0.0
         n_vendedores_l = len(db.get_vendedores(loja=loja_nome, apenas_ativos=True))
         meta_per_capita_l = (meta_l / n_vendedores_l) if n_vendedores_l > 0 else 0.0
         comparativo.append(
@@ -1205,7 +1205,7 @@ with tab_dashboard:
     st.caption(
         "Consistência e comparação individual dentro do mês selecionado. Métricas que dependem "
         "de granularidade diária (dias sem lançamento, desvio padrão, % de dias com meta batida, "
-        "melhor dia) usam só os lançamentos diários — não incluem realizado/clientes importados "
+        "melhor dia) usam só os lançamentos diários — não incluem realizado/pedidos importados "
         "como total mensal."
     )
 
@@ -1218,9 +1218,9 @@ with tab_dashboard:
         )
 
         ticket_medio_loja_map = (
-            indicadores_atual[indicadores_atual["clientes"] > 0]
+            indicadores_atual[indicadores_atual["pedidos"] > 0]
             .groupby("loja")
-            .apply(lambda g: g["realizado"].sum() / g["clientes"].sum() if g["clientes"].sum() > 0 else 0.0)
+            .apply(lambda g: g["realizado"].sum() / g["pedidos"].sum() if g["pedidos"].sum() > 0 else 0.0)
         )
 
         linhas_avancado = []

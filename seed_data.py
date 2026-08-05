@@ -2,7 +2,7 @@
 seed_data.py - Popula o banco PostgreSQL com dados fictícios para demonstração.
 
 Cria 5 vendedores (3 na Porteira, 2 na Casa de Adubo), metas para o mês
-passado e o mês atual, e lançamentos diários fictícios de vendas/clientes,
+passado e o mês atual, e lançamentos diários fictícios de vendas/pedidos,
 para que o dashboard já abra com dados visíveis.
 
 Pré-requisito: DATABASE_URL configurada (via .env local — veja .env.example).
@@ -38,29 +38,29 @@ def gerar_vendas_mes(vendedores, ano, mes, ultimo_dia, hoje):
             if data_ref > hoje:
                 continue
             valor = round(random.uniform(1500, 4500), 2)
-            clientes = random.randint(5, 25)
-            db.upsert_venda(v["id"], data_ref, valor, clientes)
+            pedidos = random.randint(5, 25)
+            db.upsert_venda(v["id"], data_ref, valor, pedidos)
 
 
 def seed():
     db.init_db()
 
     vendedores_seed = [
-        ("Carlos Eduardo Silva", "carlos.silva@porteira.com", "Porteira"),
-        ("Fernanda Lima Souza", "fernanda.souza@porteira.com", "Porteira"),
-        ("Ricardo Alves Pereira", "ricardo.pereira@porteira.com", "Porteira"),
-        ("Juliana Costa Rocha", "juliana.rocha@casadeadubo.com", "Casa de Adubo"),
-        ("Marcos Vinicius Teixeira", "marcos.teixeira@casadeadubo.com", "Casa de Adubo"),
+        ("Carlos Eduardo Silva", "Porteira"),
+        ("Fernanda Lima Souza", "Porteira"),
+        ("Ricardo Alves Pereira", "Porteira"),
+        ("Juliana Costa Rocha", "Casa de Adubo"),
+        ("Marcos Vinicius Teixeira", "Casa de Adubo"),
     ]
 
     existentes = db.get_vendedores()
     if not existentes.empty:
         print("O banco já contém vendedores. Seed cancelado para evitar duplicidade.")
-        print("Limpe as tabelas no Supabase se quiser recriar os dados do zero.")
+        print("Limpe as tabelas no Neon se quiser recriar os dados do zero.")
         return
 
-    for nome, email, loja in vendedores_seed:
-        db.add_vendedor(nome, email, loja)
+    for nome, loja in vendedores_seed:
+        db.add_vendedor(nome, loja)
 
     vendedores = db.get_vendedores()
 
