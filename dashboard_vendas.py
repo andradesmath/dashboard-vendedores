@@ -210,6 +210,33 @@ def parse_linha_historico(linha):
     return {"nome": nome, "ano": int(ano_str), "mes": mes_num, "meta": meta_valor, "realizado": realizado_valor}
 
 
+def parse_linha_venda_diaria(linha):
+    """Espera: Nome<TAB>DD/MM/AAAA<TAB>Valor (aceita 2+ espaços como separador também)."""
+    partes = linha.split("\t")
+    if len(partes) < 3:
+        partes = re.split(r"\s{2,}", linha.strip())
+    if len(partes) < 3:
+        return None
+    nome = partes[0].strip()
+    data_bruta = partes[1].strip()
+    valor_bruto = partes[2].strip()
+
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", data_bruta)
+    if not m:
+        return None
+    dia, mes, ano = (int(x) for x in m.groups())
+    try:
+        data_obj = date(ano, mes, dia)
+    except ValueError:
+        return None
+
+    valor = parse_valor_brl(valor_bruto)
+    if valor is None or not nome:
+        return None
+
+    return {"nome": nome, "data": data_obj, "valor": valor}
+
+
 tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
     ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard"]
 )
@@ -390,6 +417,49 @@ with tab_metas:
                 st.success(
                     f"Meta de {db.formatar_moeda(valor_meta)} lançada para {escolha_vend} "
                     f"em {db.MESES_PT[mes_meta]}/{ano_meta}."
+                )
+                st.session_state.versao_dados += 1
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("👥 Clientes atendidos do mês")
+    st.caption(
+        "Total de clientes atendidos no mês, quando não há quebra diária (ex.: meses "
+        "históricos ou fechamento mensal). Some ao total já lançado dia a dia, se houver."
+    )
+    vendedores_df_clientes_mes = db.get_vendedores(apenas_ativos=True)
+    if vendedores_df_clientes_mes.empty:
+        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
+    else:
+        with st.form("form_clientes_mes"):
+            colm1, colm2, colm3, colm4 = st.columns(4)
+            opcoes_vend_cm = {
+                f"{row['nome']} ({row['loja']})": row["id"]
+                for _, row in vendedores_df_clientes_mes.iterrows()
+            }
+            with colm1:
+                escolha_vend_cm = st.selectbox("Vendedor *", list(opcoes_vend_cm.keys()), key="sel_clientes_mes")
+            with colm2:
+                ano_cm = st.number_input(
+                    "Ano *", min_value=2020, max_value=2035, value=date.today().year, step=1, key="ano_clientes_mes"
+                )
+            with colm3:
+                mes_cm = st.selectbox(
+                    "Mês *", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                    index=date.today().month - 1, key="mes_clientes_mes",
+                )
+            with colm4:
+                qtd_clientes_mes = st.number_input(
+                    "Clientes atendidos *", min_value=0, step=1, format="%d", key="qtd_clientes_mes"
+                )
+
+            enviado_clientes_mes = st.form_submit_button("💾 Salvar clientes do mês")
+            if enviado_clientes_mes:
+                vendedor_id_cm = opcoes_vend_cm[escolha_vend_cm]
+                db.upsert_clientes_mensal(vendedor_id_cm, int(ano_cm), int(mes_cm), int(qtd_clientes_mes))
+                st.success(
+                    f"{qtd_clientes_mes} cliente(s) atendido(s) lançado(s) para {escolha_vend_cm} "
+                    f"em {db.MESES_PT[mes_cm]}/{ano_cm}."
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
@@ -613,6 +683,143 @@ with tab_lancamentos:
                 st.rerun()
 
     st.markdown("---")
+    st.subheader("👥 Lançar clientes atendidos por dia")
+    st.caption(
+        "Use isto quando o valor vendido do dia já foi lançado (ou importado) e falta só "
+        "informar os clientes atendidos — não sobrescreve o valor já registrado."
+    )
+    if vendedores_df.empty:
+        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
+    else:
+        with st.form("form_clientes_dia", clear_on_submit=True):
+            colc1, colc2, colc3 = st.columns(3)
+            opcoes_vend_c = {
+                f"{row['nome']} ({row['loja']})": row["id"] for _, row in vendedores_df.iterrows()
+            }
+            with colc1:
+                escolha_vend_c = st.selectbox("Vendedor *", list(opcoes_vend_c.keys()), key="sel_clientes_dia")
+            with colc2:
+                data_clientes = st.date_input(
+                    "Data *", value=date.today(), max_value=date.today(), key="data_clientes_dia"
+                )
+            with colc3:
+                qtd_clientes_dia = st.number_input(
+                    "Clientes atendidos *", min_value=0, step=1, format="%d", key="qtd_clientes_dia"
+                )
+            enviado_clientes_dia = st.form_submit_button("💾 Salvar clientes do dia")
+            if enviado_clientes_dia:
+                vendedor_id_c = opcoes_vend_c[escolha_vend_c]
+                db.upsert_clientes_dia(vendedor_id_c, data_clientes, int(qtd_clientes_dia))
+                st.success(
+                    f"Clientes atendidos salvos: {escolha_vend_c} — "
+                    f"{data_clientes.strftime('%d/%m/%Y')} — {qtd_clientes_dia} cliente(s)."
+                )
+                st.session_state.versao_dados += 1
+                st.rerun()
+
+    st.markdown("---")
+    with st.expander("📥 Importar vendas diárias em lote (sem clientes atendidos)"):
+        st.caption(
+            "Cole uma linha por lançamento, no formato: Vendedor [TAB] Data (DD/MM/AAAA) [TAB] "
+            "Valor Vendido (R$) — como copiado de uma planilha. Não sobrescreve os clientes "
+            "atendidos já lançados para o mesmo dia; se o dia ainda não existir, entra com 0 "
+            "clientes (lance depois em '👥 Lançar clientes atendidos por dia' acima)."
+        )
+        texto_venda_lote = st.text_area(
+            "Vendas diárias", height=220, key="texto_import_vendas",
+            placeholder="TAINA SANTOS\t01/08/2026\tR$ 2.388,17",
+        )
+
+        if st.button("🔍 Pré-visualizar vendas"):
+            linhas = [l for l in texto_venda_lote.splitlines() if l.strip()]
+            registros_v = []
+            erros_v = []
+            for linha in linhas:
+                if "vendedor" in linha.lower() and "data" in linha.lower():
+                    continue  # cabeçalho da tabela, ignora
+                resultado = parse_linha_venda_diaria(linha)
+                if not resultado:
+                    erros_v.append(f"Linha ignorada (formato não reconhecido): '{linha}'")
+                    continue
+                registros_v.append(resultado)
+            st.session_state["import_vendas_preview"] = registros_v
+            st.session_state["import_vendas_erros"] = erros_v
+
+        erros_vendas = st.session_state.get("import_vendas_erros", [])
+        registros_vendas = st.session_state.get("import_vendas_preview", [])
+
+        for erro in erros_vendas:
+            st.warning(erro)
+
+        if registros_vendas:
+            vendedores_todos_v = db.get_vendedores()
+            nomes_map_v = {
+                row["nome"].strip().lower(): row["nome"] for _, row in vendedores_todos_v.iterrows()
+            }
+            nomes_unicos_v = sorted({r["nome"] for r in registros_vendas})
+            nomes_nao_mapeados_v = [n for n in nomes_unicos_v if n.strip().lower() not in nomes_map_v]
+
+            mapeamento_v = {}
+            lojas_novos_v = {}
+            if nomes_nao_mapeados_v:
+                st.markdown(
+                    "**Estes nomes não batem com o cadastro atual. Diga a quem correspondem:**"
+                )
+                opcoes_vendedor_v = ["— Criar novo vendedor —"] + sorted(vendedores_todos_v["nome"].tolist())
+                for nome_bruto in nomes_nao_mapeados_v:
+                    mapeamento_v[nome_bruto] = st.selectbox(
+                        f"'{nome_bruto}' corresponde a:", opcoes_vendedor_v, key=f"map_venda_{nome_bruto}",
+                    )
+                    if mapeamento_v[nome_bruto] == "— Criar novo vendedor —":
+                        lojas_novos_v[nome_bruto] = st.selectbox(
+                            f"Loja para o novo vendedor '{nome_bruto}':", db.LOJAS,
+                            key=f"loja_novo_venda_{nome_bruto}",
+                        )
+
+            preview_v_df = pd.DataFrame(registros_vendas)
+            preview_v_df["Data"] = preview_v_df["data"].apply(lambda d: d.strftime("%d/%m/%Y"))
+            preview_v_df["Valor"] = preview_v_df["valor"].apply(db.formatar_moeda)
+            st.write(f"**{len(registros_vendas)} lançamento(s) no lote colado:**")
+            st.dataframe(
+                preview_v_df[["nome", "Data", "Valor"]].rename(columns={"nome": "Vendedor"}),
+                use_container_width=True, hide_index=True,
+            )
+
+            if st.button("✅ Confirmar importação de vendas"):
+                nomes_ids_v = {
+                    row["nome"].strip().lower(): int(row["id"]) for _, row in vendedores_todos_v.iterrows()
+                }
+                importados_v = 0
+                for registro in registros_vendas:
+                    chave = registro["nome"].strip().lower()
+                    vendedor_id_v = nomes_ids_v.get(chave)
+                    if vendedor_id_v is None:
+                        escolha_map = mapeamento_v.get(registro["nome"])
+                        if escolha_map == "— Criar novo vendedor —":
+                            loja_novo = lojas_novos_v.get(registro["nome"], db.LOJAS[0])
+                            db.add_vendedor(registro["nome"].title(), loja_novo)
+                            atualizados_v = db.get_vendedores()
+                            vendedor_id_v = int(
+                                atualizados_v[atualizados_v["nome"] == registro["nome"].title()]["id"].iloc[-1]
+                            )
+                        elif escolha_map:
+                            vendedor_id_v = int(
+                                vendedores_todos_v[vendedores_todos_v["nome"] == escolha_map]["id"].iloc[0]
+                            )
+                        else:
+                            continue
+                        nomes_ids_v[chave] = vendedor_id_v
+
+                    db.upsert_venda_valor(vendedor_id_v, registro["data"], registro["valor"])
+                    importados_v += 1
+
+                st.success(f"{importados_v} lançamento(s) de venda importado(s) com sucesso!")
+                st.session_state.pop("import_vendas_preview", None)
+                st.session_state.pop("import_vendas_erros", None)
+                st.session_state.versao_dados += 1
+                st.rerun()
+
+    st.markdown("---")
     st.subheader("Lançamentos recentes")
     filtro_loja_lanc = st.selectbox("Filtrar por loja", ["Ambas"] + db.LOJAS, key="filtro_loja_lanc")
     recentes = db.get_lancamentos_recentes(limite=30, loja=filtro_loja_lanc)
@@ -671,6 +878,7 @@ with tab_dashboard:
     metas_df = db.get_metas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     vendas_df = db.get_vendas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     manual_df = db.get_realizado_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    clientes_manual_df = db.get_clientes_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
 
     # Alerta de metas não lançadas
     sem_meta = metas_df[metas_df["valor_meta"] == 0]
@@ -796,6 +1004,17 @@ with tab_dashboard:
         vendas_agg["realizado"] = vendas_agg["realizado"] + vendas_agg["realizado_manual"]
         vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
         vendas_agg = vendas_agg.drop(columns=["realizado_manual"])
+
+    if not clientes_manual_df.empty:
+        clientes_manual_agg = (
+            clientes_manual_df.groupby("vendedor_id")["qtd_clientes"].sum().reset_index()
+            .rename(columns={"qtd_clientes": "clientes_manual"})
+        )
+        vendas_agg = vendas_agg.merge(clientes_manual_agg, on="vendedor_id", how="outer").fillna(0)
+        vendas_agg["realizado"] = vendas_agg["realizado"].fillna(0.0)
+        vendas_agg["clientes"] = vendas_agg["clientes"] + vendas_agg["clientes_manual"]
+        vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
+        vendas_agg = vendas_agg.drop(columns=["clientes_manual"])
 
     ranking = metas_df.merge(vendas_agg, on="vendedor_id", how="left")
     ranking["realizado"] = ranking["realizado"].fillna(0.0)

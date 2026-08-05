@@ -35,6 +35,7 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes):
     realizado = float(vendas["valor_realizado"].sum()) if not vendas.empty else 0.0
     realizado += db.get_realizado_manual_vendedor(vendedor_id, ano, mes)
     clientes = int(vendas["qtd_clientes"].sum()) if not vendas.empty else 0
+    clientes += db.get_clientes_manual_vendedor(vendedor_id, ano, mes)
     atingimento = (realizado / meta * 100) if meta > 0 else 0.0
     ticket = (realizado / clientes) if clientes > 0 else 0.0
     return {
