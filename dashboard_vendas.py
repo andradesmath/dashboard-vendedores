@@ -150,7 +150,7 @@ with tab_cadastros:
     else:
         st.dataframe(
             vendedores_df[["id", "nome", "email", "loja", "ativo"]].rename(
-                columns={"id": "ID", "nome": "Nome", "loja": "Loja", "ativo": "Ativo"}
+                columns={"id": "ID", "nome": "Nome", "email": "E-mail", "loja": "Loja", "ativo": "Ativo"}
             ),
             use_container_width=True,
             hide_index=True,
@@ -162,6 +162,7 @@ with tab_cadastros:
         st.markdown("##### ➕ Adicionar vendedor")
         with st.form("form_add_vendedor", clear_on_submit=True):
             nome = st.text_input("Nome completo *")
+            email = st.text_input("E-mail (opcional)")
             loja = st.selectbox("Loja *", db.LOJAS)
             enviado = st.form_submit_button("Adicionar vendedor")
             if enviado:
@@ -186,7 +187,8 @@ with tab_cadastros:
             vendedor_atual = vendedores_df[vendedores_df["id"] == vendedor_id].iloc[0]
 
             with st.form("form_edit_vendedor"):
-                novo_nome = st.text_input("Nome completo *", value=vendedor_atual["nome"]
+                novo_nome = st.text_input("Nome completo *", value=vendedor_atual["nome"])
+                novo_email = st.text_input("E-mail (opcional)", value=vendedor_atual["email"] or "")
                 nova_loja = st.selectbox(
                     "Loja *", db.LOJAS, index=db.LOJAS.index(vendedor_atual["loja"])
                 )
