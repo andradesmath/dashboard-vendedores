@@ -159,6 +159,55 @@ def normalizar_loja(texto):
     return None
 
 
+MESES_ABREV = {
+    "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
+    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12,
+}
+
+
+def parse_valor_brl(texto):
+    """Converte 'R$ 115.000,00' ou '115000,00' em float. Aceita negativos."""
+    texto = texto.strip().replace("R$", "").strip()
+    if not texto:
+        return None
+    negativo = texto.startswith("-")
+    texto = texto.lstrip("-").strip()
+    texto = texto.replace(".", "").replace(",", ".")
+    try:
+        valor = float(texto)
+    except ValueError:
+        return None
+    return -valor if negativo else valor
+
+
+def parse_linha_historico(linha):
+    """Espera: Nome<TAB>mes/ano<TAB>Meta<TAB>Realizado (aceita 2+ espaços como separador também)."""
+    partes = linha.split("\t")
+    if len(partes) < 4:
+        partes = re.split(r"\s{2,}", linha.strip())
+    if len(partes) < 4:
+        return None
+    nome = partes[0].strip()
+    mes_ano_bruto = partes[1].strip().lower()
+    meta_bruta = partes[2].strip()
+    realizado_bruto = partes[3].strip()
+
+    m = re.match(r"([a-zç]{3})/(\d{4})", mes_ano_bruto)
+    if not m:
+        return None
+    abrev, ano_str = m.groups()
+    mes_num = MESES_ABREV.get(abrev)
+    if not mes_num or not nome:
+        return None
+
+    meta_valor = parse_valor_brl(meta_bruta)
+    realizado_valor = parse_valor_brl(realizado_bruto)
+    if meta_valor is None or realizado_valor is None:
+        return None
+
+    return {"nome": nome, "ano": int(ano_str), "mes": mes_num, "meta": meta_valor, "realizado": realizado_valor}
+
+
 tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
     ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard"]
 )
@@ -344,10 +393,117 @@ with tab_metas:
                 st.rerun()
 
     st.markdown("---")
+    with st.expander("📥 Importar histórico de Meta x Realizado (meses anteriores)"):
+        st.caption(
+            "Cole uma linha por lançamento, no formato: Vendedor [TAB] Mês/Ano [TAB] Meta (R$) "
+            "[TAB] Realizado (R$) — como copiado de uma planilha ou tabela de PDF. Mês/Ano no "
+            "formato 'mai/2026'. Use isso para meses em que só existe o total mensal (sem "
+            "lançamento diário) — o realizado importado aqui entra nos totais e no ranking, mas "
+            "não tem granularidade diária."
+        )
+        texto_hist = st.text_area(
+            "Dados históricos", height=220, key="texto_import_historico",
+            placeholder="ADRIELY\tmai/2026\tR$ 115.000,00\tR$ 119.665,85",
+        )
+
+        if st.button("🔍 Pré-visualizar histórico"):
+            linhas = [l for l in texto_hist.splitlines() if l.strip()]
+            registros = []
+            erros = []
+            for linha in linhas:
+                if "vendedor" in linha.lower() and "meta" in linha.lower():
+                    continue  # cabeçalho da tabela, ignora
+                resultado = parse_linha_historico(linha)
+                if not resultado:
+                    erros.append(f"Linha ignorada (formato não reconhecido): '{linha}'")
+                    continue
+                registros.append(resultado)
+            st.session_state["import_hist_preview"] = registros
+            st.session_state["import_hist_erros"] = erros
+
+        erros_hist = st.session_state.get("import_hist_erros", [])
+        registros_hist = st.session_state.get("import_hist_preview", [])
+
+        for erro in erros_hist:
+            st.warning(erro)
+
+        if registros_hist:
+            vendedores_todos = db.get_vendedores()
+            nomes_existentes_map = {
+                row["nome"].strip().lower(): row["nome"] for _, row in vendedores_todos.iterrows()
+            }
+            nomes_unicos = sorted({r["nome"] for r in registros_hist})
+            nomes_nao_mapeados = [n for n in nomes_unicos if n.strip().lower() not in nomes_existentes_map]
+
+            mapeamento = {}
+            lojas_novos = {}
+            if nomes_nao_mapeados:
+                st.markdown(
+                    "**Estes nomes do histórico não batem com o cadastro atual. "
+                    "Diga a quem correspondem:**"
+                )
+                opcoes_vendedor = ["— Criar novo vendedor —"] + sorted(vendedores_todos["nome"].tolist())
+                for nome_bruto in nomes_nao_mapeados:
+                    mapeamento[nome_bruto] = st.selectbox(
+                        f"'{nome_bruto}' corresponde a:", opcoes_vendedor, key=f"map_{nome_bruto}",
+                    )
+                    if mapeamento[nome_bruto] == "— Criar novo vendedor —":
+                        lojas_novos[nome_bruto] = st.selectbox(
+                            f"Loja para o novo vendedor '{nome_bruto}':", db.LOJAS,
+                            key=f"loja_novo_{nome_bruto}",
+                        )
+
+            preview_df = pd.DataFrame(registros_hist)
+            preview_df["Mês/Ano"] = preview_df.apply(lambda r: f"{db.MESES_PT[r['mes']]}/{r['ano']}", axis=1)
+            preview_df["Meta"] = preview_df["meta"].apply(db.formatar_moeda)
+            preview_df["Realizado"] = preview_df["realizado"].apply(db.formatar_moeda)
+            st.write(f"**{len(registros_hist)} lançamento(s) no histórico colado:**")
+            st.dataframe(
+                preview_df[["nome", "Mês/Ano", "Meta", "Realizado"]].rename(columns={"nome": "Vendedor"}),
+                use_container_width=True, hide_index=True,
+            )
+
+            if st.button("✅ Confirmar importação do histórico"):
+                nomes_ids = {
+                    row["nome"].strip().lower(): int(row["id"]) for _, row in vendedores_todos.iterrows()
+                }
+                importados = 0
+                for registro in registros_hist:
+                    chave = registro["nome"].strip().lower()
+                    vendedor_id = nomes_ids.get(chave)
+                    if vendedor_id is None:
+                        escolha_map = mapeamento.get(registro["nome"])
+                        if escolha_map == "— Criar novo vendedor —":
+                            loja_novo = lojas_novos.get(registro["nome"], db.LOJAS[0])
+                            db.add_vendedor(registro["nome"].title(), loja_novo)
+                            atualizados = db.get_vendedores()
+                            vendedor_id = int(
+                                atualizados[atualizados["nome"] == registro["nome"].title()]["id"].iloc[-1]
+                            )
+                        elif escolha_map:
+                            vendedor_id = int(
+                                vendedores_todos[vendedores_todos["nome"] == escolha_map]["id"].iloc[0]
+                            )
+                        else:
+                            continue
+                        nomes_ids[chave] = vendedor_id
+
+                    db.upsert_meta(vendedor_id, registro["ano"], registro["mes"], registro["meta"])
+                    db.upsert_realizado_mensal(vendedor_id, registro["ano"], registro["mes"], registro["realizado"])
+                    importados += 1
+
+                st.success(f"{importados} registro(s) de meta/realizado importado(s) com sucesso!")
+                st.session_state.pop("import_hist_preview", None)
+                st.session_state.pop("import_hist_erros", None)
+                st.session_state.versao_dados += 1
+                st.rerun()
+
+    st.markdown("---")
     st.subheader("Histórico consolidado: Meta x Realizado")
     st.caption(
-        "Um bloco por mês, com o realizado somado a partir dos lançamentos diários de cada "
-        "vendedor, e o total do mês ao final de cada bloco."
+        "Um bloco por mês, com o realizado somado a partir dos lançamentos diários (e do "
+        "histórico importado, quando não houver detalhamento diário) de cada vendedor, e o "
+        "total do mês ao final de cada bloco."
     )
     filtro_loja_metas = st.selectbox("Filtrar por loja", ["Ambas"] + db.LOJAS, key="filtro_loja_metas")
     historico = db.get_historico_meta_realizado(loja=filtro_loja_metas)
@@ -509,6 +665,7 @@ with tab_dashboard:
 
     metas_df = db.get_metas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     vendas_df = db.get_vendas_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    manual_df = db.get_realizado_manual_mes(ano_filtro, mes_filtro, loja=loja_filtro)
 
     # Alerta de metas não lançadas
     sem_meta = metas_df[metas_df["valor_meta"] == 0]
@@ -516,10 +673,19 @@ with tab_dashboard:
         nomes_sem_meta = ", ".join(sem_meta["nome"].tolist())
         st.warning(f"⚠️ Meta não lançada para: {nomes_sem_meta} (considerando Meta = R$ 0,00).")
 
+    if not manual_df.empty:
+        st.caption(
+            "ℹ️ Este mês inclui realizado importado como total mensal (sem lançamento diário) "
+            "para: " + ", ".join(sorted(manual_df["nome"].unique().tolist())) +
+            ". Esses valores entram nos totais e no ranking, mas não aparecem na evolução diária "
+            "nem no mapa de calor por dia da semana."
+        )
+
     # ---- KPIs ----
-    meta_total = float(metas_df["valor_meta"].sum()) if not metas_df.empty else 0.0
-    realizado_total = float(vendas_df["valor_realizado"].sum()) if not vendas_df.empty else 0.0
-    clientes_total = int(vendas_df["qtd_clientes"].sum()) if not vendas_df.empty else 0
+    totais_mes_atual = db.get_totais_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    meta_total = totais_mes_atual["meta"]
+    realizado_total = totais_mes_atual["realizado"]
+    clientes_total = totais_mes_atual["clientes"]
 
     atingimento_pct = (realizado_total / meta_total * 100) if meta_total > 0 else 0.0
     dias_transcorridos = db.dias_uteis_transcorridos(ano_filtro, mes_filtro, dias_uteis_total)
@@ -615,6 +781,16 @@ with tab_dashboard:
             .agg(realizado=("valor_realizado", "sum"), clientes=("qtd_clientes", "sum"))
             .reset_index()
         )
+
+    if not manual_df.empty:
+        manual_agg = (
+            manual_df.groupby("vendedor_id")["valor_realizado"].sum().reset_index()
+            .rename(columns={"valor_realizado": "realizado_manual"})
+        )
+        vendas_agg = vendas_agg.merge(manual_agg, on="vendedor_id", how="outer").fillna(0)
+        vendas_agg["realizado"] = vendas_agg["realizado"] + vendas_agg["realizado_manual"]
+        vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
+        vendas_agg = vendas_agg.drop(columns=["realizado_manual"])
 
     ranking = metas_df.merge(vendas_agg, on="vendedor_id", how="left")
     ranking["realizado"] = ranking["realizado"].fillna(0.0)
@@ -776,11 +952,10 @@ with tab_dashboard:
     st.markdown("### 🏬 Comparativo entre Lojas — Porteira vs. Casa de Adubo")
     comparativo = []
     for loja_nome in db.LOJAS:
-        metas_loja = db.get_metas_mes(ano_filtro, mes_filtro, loja=loja_nome)
-        vendas_loja = db.get_vendas_mes(ano_filtro, mes_filtro, loja=loja_nome)
-        meta_l = float(metas_loja["valor_meta"].sum()) if not metas_loja.empty else 0.0
-        realizado_l = float(vendas_loja["valor_realizado"].sum()) if not vendas_loja.empty else 0.0
-        clientes_l = int(vendas_loja["qtd_clientes"].sum()) if not vendas_loja.empty else 0
+        totais_loja = db.get_totais_mes(ano_filtro, mes_filtro, loja=loja_nome)
+        meta_l = totais_loja["meta"]
+        realizado_l = totais_loja["realizado"]
+        clientes_l = totais_loja["clientes"]
         atingimento_l = (realizado_l / meta_l * 100) if meta_l > 0 else 0.0
         ticket_l = (realizado_l / clientes_l) if clientes_l > 0 else 0.0
         comparativo.append(

@@ -93,6 +93,16 @@ def init_db():
             UNIQUE (vendedor_id, data)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS realizado_mensal_manual (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            ano INTEGER NOT NULL,
+            mes INTEGER NOT NULL,
+            valor_realizado NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            UNIQUE (vendedor_id, ano, mes)
+        )
+        """,
     ]
     with get_engine().begin() as conn:
         for stmt in ddl:
@@ -189,28 +199,33 @@ def get_metas_historico(loja=None):
 
 def get_historico_meta_realizado(loja=None):
     """Histórico por vendedor/mês combinando meta lançada com o realizado somado a
-    partir das vendas diárias (inclui meses com venda mas sem meta lançada e vice-versa)."""
+    partir das vendas diárias + realizado manual importado (inclui meses com venda
+    mas sem meta lançada e vice-versa)."""
     query = """
         WITH venda_agg AS (
             SELECT vendedor_id,
                    EXTRACT(YEAR FROM data)::int AS ano,
                    EXTRACT(MONTH FROM data)::int AS mes,
-                   SUM(valor_realizado) AS realizado,
+                   SUM(valor_realizado) AS realizado_diario,
                    SUM(qtd_clientes) AS clientes
             FROM vendas_diarias
             GROUP BY vendedor_id, EXTRACT(YEAR FROM data), EXTRACT(MONTH FROM data)
         ),
         combinado AS (
             SELECT
-                COALESCE(m.vendedor_id, va.vendedor_id) AS vendedor_id,
-                COALESCE(m.ano, va.ano) AS ano,
-                COALESCE(m.mes, va.mes) AS mes,
+                COALESCE(m.vendedor_id, va.vendedor_id, rm.vendedor_id) AS vendedor_id,
+                COALESCE(m.ano, va.ano, rm.ano) AS ano,
+                COALESCE(m.mes, va.mes, rm.mes) AS mes,
                 COALESCE(m.valor_meta, 0) AS valor_meta,
-                COALESCE(va.realizado, 0) AS realizado,
+                COALESCE(va.realizado_diario, 0) + COALESCE(rm.valor_realizado, 0) AS realizado,
                 COALESCE(va.clientes, 0) AS clientes
             FROM metas m
             FULL OUTER JOIN venda_agg va
               ON m.vendedor_id = va.vendedor_id AND m.ano = va.ano AND m.mes = va.mes
+            FULL OUTER JOIN realizado_mensal_manual rm
+              ON COALESCE(m.vendedor_id, va.vendedor_id) = rm.vendedor_id
+             AND COALESCE(m.ano, va.ano) = rm.ano
+             AND COALESCE(m.mes, va.mes) = rm.mes
         )
         SELECT c.ano, c.mes, c.valor_meta, c.realizado, c.clientes,
                v.id AS vendedor_id, v.nome, v.loja
@@ -335,6 +350,57 @@ def get_lancamentos_recentes(limite=30, loja=None):
 
 
 # --------------------------------------------------------------------------
+# Realizado mensal manual (para importar histórico de meses sem lançamento
+# diário — ex.: dados de antes deste sistema, importados de uma planilha/PDF).
+# Esse valor é somado ao realizado diário nos totais e no histórico, mas não
+# entra nos gráficos que dependem de granularidade por dia (evolução diária,
+# mapa de calor por dia da semana) nem na contagem de clientes atendidos.
+# --------------------------------------------------------------------------
+def upsert_realizado_mensal(vendedor_id, ano, mes, valor_realizado):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO realizado_mensal_manual (vendedor_id, ano, mes, valor_realizado)
+                VALUES (:vendedor_id, :ano, :mes, :valor_realizado)
+                ON CONFLICT (vendedor_id, ano, mes)
+                DO UPDATE SET valor_realizado = EXCLUDED.valor_realizado
+                """
+            ),
+            {"vendedor_id": vendedor_id, "ano": ano, "mes": mes, "valor_realizado": valor_realizado},
+        )
+
+
+def get_realizado_manual_mes(ano, mes, loja=None):
+    query = """
+        SELECT rm.vendedor_id, v.nome, v.loja, rm.valor_realizado
+        FROM realizado_mensal_manual rm
+        JOIN vendedores v ON v.id = rm.vendedor_id
+        WHERE rm.ano = :ano AND rm.mes = :mes
+    """
+    params = {"ano": ano, "mes": mes}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_realizado"] = df["valor_realizado"].astype(float)
+    return df
+
+
+def get_realizado_manual_vendedor(vendedor_id, ano, mes):
+    df = pd.read_sql_query(
+        text(
+            "SELECT valor_realizado FROM realizado_mensal_manual "
+            "WHERE vendedor_id=:vid AND ano=:ano AND mes=:mes"
+        ),
+        get_engine(),
+        params={"vid": vendedor_id, "ano": ano, "mes": mes},
+    )
+    return float(df.iloc[0]["valor_realizado"]) if not df.empty else 0.0
+
+
+# --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------
 def mes_anterior(ano, mes):
@@ -344,11 +410,14 @@ def mes_anterior(ano, mes):
 
 
 def get_totais_mes(ano, mes, loja=None):
-    """Meta total, realizado total e clientes totais do mês (já filtrado por loja)."""
+    """Meta total, realizado total (diário + manual) e clientes totais do mês
+    (já filtrado por loja)."""
     metas_df = get_metas_mes(ano, mes, loja=loja)
     vendas_df = get_vendas_mes(ano, mes, loja=loja)
+    manual_df = get_realizado_manual_mes(ano, mes, loja=loja)
     meta_total = float(metas_df["valor_meta"].sum()) if not metas_df.empty else 0.0
     realizado_total = float(vendas_df["valor_realizado"].sum()) if not vendas_df.empty else 0.0
+    realizado_total += float(manual_df["valor_realizado"].sum()) if not manual_df.empty else 0.0
     clientes_total = int(vendas_df["qtd_clientes"].sum()) if not vendas_df.empty else 0
     return {"meta": meta_total, "realizado": realizado_total, "clientes": clientes_total}
 
