@@ -181,16 +181,18 @@ def parse_valor_brl(texto):
 
 
 def parse_linha_historico(linha):
-    """Espera: Nome<TAB>mes/ano<TAB>Meta<TAB>Realizado (aceita 2+ espaços como separador também)."""
+    """Espera: Nome<TAB>mes/ano<TAB>Meta<TAB>Realizado (aceita 2+ espaços como separador
+    também). A coluna Realizado é opcional — se ausente (ex.: metas de meses futuros/atuais
+    ainda sem resultado), assume 0."""
     partes = linha.split("\t")
-    if len(partes) < 4:
+    if len(partes) < 3:
         partes = re.split(r"\s{2,}", linha.strip())
-    if len(partes) < 4:
+    if len(partes) < 3:
         return None
     nome = partes[0].strip()
     mes_ano_bruto = partes[1].strip().lower()
     meta_bruta = partes[2].strip()
-    realizado_bruto = partes[3].strip()
+    realizado_bruto = partes[3].strip() if len(partes) > 3 else "0"
 
     m = re.match(r"([a-zç]{3})/(\d{4})", mes_ano_bruto)
     if not m:
@@ -397,9 +399,9 @@ with tab_metas:
         st.caption(
             "Cole uma linha por lançamento, no formato: Vendedor [TAB] Mês/Ano [TAB] Meta (R$) "
             "[TAB] Realizado (R$) — como copiado de uma planilha ou tabela de PDF. Mês/Ano no "
-            "formato 'mai/2026'. Use isso para meses em que só existe o total mensal (sem "
-            "lançamento diário) — o realizado importado aqui entra nos totais e no ranking, mas "
-            "não tem granularidade diária."
+            "formato 'mai/2026'. A coluna Realizado é opcional: para metas de meses futuros ou "
+            "do mês atual (ainda sem resultado), basta colar só Vendedor/Mês-Ano/Meta. Quando "
+            "houver Realizado, ele entra nos totais e no ranking, mas sem granularidade diária."
         )
         texto_hist = st.text_area(
             "Dados históricos", height=220, key="texto_import_historico",
@@ -489,7 +491,10 @@ with tab_metas:
                         nomes_ids[chave] = vendedor_id
 
                     db.upsert_meta(vendedor_id, registro["ano"], registro["mes"], registro["meta"])
-                    db.upsert_realizado_mensal(vendedor_id, registro["ano"], registro["mes"], registro["realizado"])
+                    if registro["realizado"] != 0:
+                        db.upsert_realizado_mensal(
+                            vendedor_id, registro["ano"], registro["mes"], registro["realizado"]
+                        )
                     importados += 1
 
                 st.success(f"{importados} registro(s) de meta/realizado importado(s) com sucesso!")
