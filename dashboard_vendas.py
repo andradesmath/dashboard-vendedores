@@ -73,6 +73,7 @@ PASSO 3 - DEPLOY GRATUITO NO STREAMLIT COMMUNITY CLOUD
 ====================================================================
 """
 import calendar
+import re
 from datetime import date
 
 import pandas as pd
@@ -133,6 +134,30 @@ if "versao_dados" not in st.session_state:
 
 st.title("📊 Painel de Desempenho de Vendedores")
 st.caption("Porteira & Casa de Adubo — controle de metas, realizado e produtividade comercial")
+
+def parse_linha_importacao(linha):
+    """Aceita 'Nome<TAB>Loja', 'Nome  Loja' (2+ espaços) ou 'Nome,Loja'."""
+    partes = linha.split("\t")
+    if len(partes) < 2:
+        partes = re.split(r"\s{2,}", linha.strip())
+    if len(partes) < 2:
+        partes = linha.split(",")
+    if len(partes) < 2:
+        return None
+    nome = partes[0].strip()
+    loja = partes[1].strip()
+    if not nome or not loja:
+        return None
+    return nome, loja
+
+
+def normalizar_loja(texto):
+    texto_norm = texto.strip().lower()
+    for loja_valida in db.LOJAS:
+        if loja_valida.lower() == texto_norm:
+            return loja_valida
+    return None
+
 
 tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
     ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard"]
@@ -209,6 +234,74 @@ with tab_cadastros:
                     st.warning(f"Vendedor '{vendedor_atual['nome']}' excluído (metas e vendas associadas também foram removidas).")
                     st.session_state.versao_dados += 1
                     st.rerun()
+
+    st.markdown("---")
+    with st.expander("📥 Importar vendedores em lote"):
+        st.caption(
+            "Cole uma lista com um vendedor por linha, no formato 'Nome' seguido da loja "
+            "(separados por TAB, vírgula, ou copiados direto de uma planilha/Excel). "
+            "Lojas aceitas: Porteira, Casa de Adubo."
+        )
+        texto_import = st.text_area(
+            "Lista de vendedores", height=200, key="texto_import_vendedores",
+            placeholder="FELIPE\tPorteira\nELIZANGELA BATISTA\tPorteira\nADRIELY\tCasa de Adubo",
+        )
+
+        if st.button("🔍 Pré-visualizar importação"):
+            linhas = [l for l in texto_import.splitlines() if l.strip()]
+            registros_validos = []
+            erros = []
+            for linha in linhas:
+                resultado = parse_linha_importacao(linha)
+                if not resultado:
+                    erros.append(f"Linha ignorada (formato não reconhecido): '{linha}'")
+                    continue
+                nome_bruto, loja_bruta = resultado
+                loja_normalizada = normalizar_loja(loja_bruta)
+                if not loja_normalizada:
+                    erros.append(
+                        f"Loja inválida para '{nome_bruto}': '{loja_bruta}' "
+                        "(use Porteira ou Casa de Adubo)"
+                    )
+                    continue
+                registros_validos.append({"nome": nome_bruto.title(), "loja": loja_normalizada})
+            st.session_state["import_preview"] = registros_validos
+            st.session_state["import_erros"] = erros
+
+        erros_preview = st.session_state.get("import_erros", [])
+        preview = st.session_state.get("import_preview", [])
+
+        for erro in erros_preview:
+            st.warning(erro)
+
+        if preview:
+            nomes_existentes = {n.strip().lower() for n in db.get_vendedores()["nome"].tolist()}
+            novos = [r for r in preview if r["nome"].strip().lower() not in nomes_existentes]
+            ja_existentes = [r for r in preview if r["nome"].strip().lower() in nomes_existentes]
+
+            if novos:
+                st.write(f"**{len(novos)} vendedor(es) novo(s) para importar:**")
+                st.dataframe(
+                    pd.DataFrame(novos).rename(columns={"nome": "Nome", "loja": "Loja"}),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.info("Nenhum vendedor novo para importar (todos já cadastrados).")
+
+            if ja_existentes:
+                st.caption(
+                    f"{len(ja_existentes)} já cadastrado(s) e serão ignorados: "
+                    + ", ".join(r["nome"] for r in ja_existentes)
+                )
+
+            if novos and st.button("✅ Confirmar importação"):
+                for registro in novos:
+                    db.add_vendedor(registro["nome"], registro["loja"])
+                st.success(f"{len(novos)} vendedor(es) importado(s) com sucesso!")
+                st.session_state.pop("import_preview", None)
+                st.session_state.pop("import_erros", None)
+                st.session_state.versao_dados += 1
+                st.rerun()
 
 # ==========================================================================
 # ABA 2 - METAS
