@@ -69,7 +69,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS vendedores (
             id SERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
-            email TEXT,
             loja TEXT NOT NULL CHECK (loja IN ('Porteira', 'Casa de Adubo')),
             ativo BOOLEAN NOT NULL DEFAULT TRUE
         )
@@ -98,27 +97,28 @@ def init_db():
     with get_engine().begin() as conn:
         for stmt in ddl:
             conn.execute(text(stmt))
+        # Migração: remove a coluna email de bancos criados com a versão anterior do schema.
+        conn.execute(text("ALTER TABLE vendedores DROP COLUMN IF EXISTS email"))
 
 
 # --------------------------------------------------------------------------
 # Vendedores
 # --------------------------------------------------------------------------
-def add_vendedor(nome, email, loja):
+def add_vendedor(nome, loja):
     with get_engine().begin() as conn:
         conn.execute(
-            text("INSERT INTO vendedores (nome, email, loja) VALUES (:nome, :email, :loja)"),
-            {"nome": nome, "email": email, "loja": loja},
+            text("INSERT INTO vendedores (nome, loja) VALUES (:nome, :loja)"),
+            {"nome": nome, "loja": loja},
         )
 
 
-def update_vendedor(vendedor_id, nome, email, loja, ativo=True):
+def update_vendedor(vendedor_id, nome, loja, ativo=True):
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                "UPDATE vendedores SET nome=:nome, email=:email, loja=:loja, ativo=:ativo "
-                "WHERE id=:id"
+                "UPDATE vendedores SET nome=:nome, loja=:loja, ativo=:ativo WHERE id=:id"
             ),
-            {"nome": nome, "email": email, "loja": loja, "ativo": bool(ativo), "id": vendedor_id},
+            {"nome": nome, "loja": loja, "ativo": bool(ativo), "id": vendedor_id},
         )
 
 
@@ -185,6 +185,52 @@ def get_metas_historico(loja=None):
         params["loja"] = loja
     query += " ORDER BY m.ano DESC, m.mes DESC, v.nome"
     return pd.read_sql_query(text(query), get_engine(), params=params)
+
+
+def get_historico_meta_realizado(loja=None):
+    """Histórico por vendedor/mês combinando meta lançada com o realizado somado a
+    partir das vendas diárias (inclui meses com venda mas sem meta lançada e vice-versa)."""
+    query = """
+        WITH venda_agg AS (
+            SELECT vendedor_id,
+                   EXTRACT(YEAR FROM data)::int AS ano,
+                   EXTRACT(MONTH FROM data)::int AS mes,
+                   SUM(valor_realizado) AS realizado,
+                   SUM(qtd_clientes) AS clientes
+            FROM vendas_diarias
+            GROUP BY vendedor_id, EXTRACT(YEAR FROM data), EXTRACT(MONTH FROM data)
+        ),
+        combinado AS (
+            SELECT
+                COALESCE(m.vendedor_id, va.vendedor_id) AS vendedor_id,
+                COALESCE(m.ano, va.ano) AS ano,
+                COALESCE(m.mes, va.mes) AS mes,
+                COALESCE(m.valor_meta, 0) AS valor_meta,
+                COALESCE(va.realizado, 0) AS realizado,
+                COALESCE(va.clientes, 0) AS clientes
+            FROM metas m
+            FULL OUTER JOIN venda_agg va
+              ON m.vendedor_id = va.vendedor_id AND m.ano = va.ano AND m.mes = va.mes
+        )
+        SELECT c.ano, c.mes, c.valor_meta, c.realizado, c.clientes,
+               v.id AS vendedor_id, v.nome, v.loja
+        FROM combinado c
+        JOIN vendedores v ON v.id = c.vendedor_id
+        WHERE 1=1
+    """
+    params = {}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    query += " ORDER BY c.ano DESC, c.mes DESC, v.nome"
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_meta"] = df["valor_meta"].astype(float)
+        df["realizado"] = df["realizado"].astype(float)
+        df["clientes"] = df["clientes"].astype(int)
+        df["ano"] = df["ano"].astype(int)
+        df["mes"] = df["mes"].astype(int)
+    return df
 
 
 def get_metas_mes(ano, mes, loja=None):

@@ -149,8 +149,8 @@ with tab_cadastros:
         st.info("Nenhum vendedor cadastrado ainda. Use o formulário abaixo para adicionar.")
     else:
         st.dataframe(
-            vendedores_df[["id", "nome", "email", "loja", "ativo"]].rename(
-                columns={"id": "ID", "nome": "Nome", "email": "E-mail", "loja": "Loja", "ativo": "Ativo"}
+            vendedores_df[["id", "nome", "loja", "ativo"]].rename(
+                columns={"id": "ID", "nome": "Nome", "loja": "Loja", "ativo": "Ativo"}
             ),
             use_container_width=True,
             hide_index=True,
@@ -162,14 +162,13 @@ with tab_cadastros:
         st.markdown("##### ➕ Adicionar vendedor")
         with st.form("form_add_vendedor", clear_on_submit=True):
             nome = st.text_input("Nome completo *")
-            email = st.text_input("E-mail (opcional)")
             loja = st.selectbox("Loja *", db.LOJAS)
             enviado = st.form_submit_button("Adicionar vendedor")
             if enviado:
                 if not nome.strip():
                     st.error("O nome completo é obrigatório.")
                 else:
-                    db.add_vendedor(nome.strip(), email.strip() or None, loja)
+                    db.add_vendedor(nome.strip(), loja)
                     st.success(f"Vendedor '{nome}' adicionado com sucesso!")
                     st.session_state.versao_dados += 1
                     st.rerun()
@@ -188,7 +187,6 @@ with tab_cadastros:
 
             with st.form("form_edit_vendedor"):
                 novo_nome = st.text_input("Nome completo *", value=vendedor_atual["nome"])
-                novo_email = st.text_input("E-mail (opcional)", value=vendedor_atual["email"] or "")
                 nova_loja = st.selectbox(
                     "Loja *", db.LOJAS, index=db.LOJAS.index(vendedor_atual["loja"])
                 )
@@ -201,9 +199,7 @@ with tab_cadastros:
                     if not novo_nome.strip():
                         st.error("O nome completo é obrigatório.")
                     else:
-                        db.update_vendedor(
-                            vendedor_id, novo_nome.strip(), novo_email.strip() or None, nova_loja, novo_ativo
-                        )
+                        db.update_vendedor(vendedor_id, novo_nome.strip(), nova_loja, novo_ativo)
                         st.success("Vendedor atualizado com sucesso!")
                         st.session_state.versao_dados += 1
                         st.rerun()
@@ -255,25 +251,73 @@ with tab_metas:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("Histórico consolidado de metas")
+    st.subheader("Histórico consolidado: Meta x Realizado")
+    st.caption(
+        "Um bloco por mês, com o realizado somado a partir dos lançamentos diários de cada "
+        "vendedor, e o total do mês ao final de cada bloco."
+    )
     filtro_loja_metas = st.selectbox("Filtrar por loja", ["Ambas"] + db.LOJAS, key="filtro_loja_metas")
-    historico = db.get_metas_historico(loja=filtro_loja_metas)
+    historico = db.get_historico_meta_realizado(loja=filtro_loja_metas)
 
     if historico.empty:
-        st.info("Nenhuma meta lançada ainda.")
+        st.info("Nenhuma meta ou venda lançada ainda.")
     else:
-        historico_fmt = historico.copy()
-        historico_fmt["Mês/Ano"] = historico_fmt.apply(
-            lambda r: f"{db.MESES_PT[r['mes']]}/{r['ano']}", axis=1
+        historico["atingimento_pct"] = historico.apply(
+            lambda r: (r["realizado"] / r["valor_meta"] * 100) if r["valor_meta"] > 0 else 0.0, axis=1
         )
-        historico_fmt["Meta (R$)"] = historico_fmt["valor_meta"].apply(db.formatar_moeda)
-        st.dataframe(
-            historico_fmt[["nome", "loja", "Mês/Ano", "Meta (R$)"]].rename(
-                columns={"nome": "Vendedor", "loja": "Loja"}
-            ),
-            use_container_width=True,
-            hide_index=True,
+        historico["ticket_medio"] = historico.apply(
+            lambda r: (r["realizado"] / r["clientes"]) if r["clientes"] > 0 else 0.0, axis=1
         )
+
+        periodos = (
+            historico[["ano", "mes"]]
+            .drop_duplicates()
+            .sort_values(["ano", "mes"], ascending=[False, False])
+        )
+
+        for _, per in periodos.iterrows():
+            ano_h, mes_h = int(per["ano"]), int(per["mes"])
+            bloco = historico[(historico["ano"] == ano_h) & (historico["mes"] == mes_h)].sort_values(
+                "realizado", ascending=False
+            )
+
+            st.markdown(f"##### {db.MESES_PT[mes_h]}/{ano_h}")
+
+            sem_meta_bloco = bloco[bloco["valor_meta"] == 0]
+            if not sem_meta_bloco.empty:
+                st.caption(f"⚠️ Meta não lançada para: {', '.join(sem_meta_bloco['nome'].tolist())}")
+
+            bloco_fmt = bloco.copy()
+            bloco_fmt["Meta"] = bloco_fmt["valor_meta"].apply(db.formatar_moeda)
+            bloco_fmt["Realizado"] = bloco_fmt["realizado"].apply(db.formatar_moeda)
+            bloco_fmt["Atingimento (%)"] = bloco_fmt["atingimento_pct"].apply(lambda v: f"{v:.1f}%")
+            bloco_fmt["Ticket Médio"] = bloco_fmt["ticket_medio"].apply(db.formatar_moeda)
+            st.dataframe(
+                bloco_fmt[
+                    ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "clientes", "Ticket Médio"]
+                ].rename(columns={"nome": "Vendedor", "loja": "Loja", "clientes": "Clientes Atendidos"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            meta_total_mes = float(bloco["valor_meta"].sum())
+            realizado_total_mes = float(bloco["realizado"].sum())
+            clientes_total_mes = int(bloco["clientes"].sum())
+            atingimento_total_mes = (
+                (realizado_total_mes / meta_total_mes * 100) if meta_total_mes > 0 else 0.0
+            )
+            ticket_total_mes = (
+                (realizado_total_mes / clientes_total_mes) if clientes_total_mes > 0 else 0.0
+            )
+
+            st.markdown(
+                f"**Total do mês:** Meta {db.formatar_moeda(meta_total_mes)} · "
+                f"Realizado {db.formatar_moeda(realizado_total_mes)} · "
+                f"Atingimento {atingimento_total_mes:.1f}% · "
+                f"Clientes atendidos {clientes_total_mes} · "
+                f"Ticket médio {db.formatar_moeda(ticket_total_mes)}"
+            )
+            st.markdown("---")
 
 # ==========================================================================
 # ABA 3 - LANÇAMENTOS DIÁRIOS
