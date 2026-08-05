@@ -337,6 +337,22 @@ def get_lancamentos_recentes(limite=30, loja=None):
 # --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------
+def mes_anterior(ano, mes):
+    if mes == 1:
+        return ano - 1, 12
+    return ano, mes - 1
+
+
+def get_totais_mes(ano, mes, loja=None):
+    """Meta total, realizado total e clientes totais do mês (já filtrado por loja)."""
+    metas_df = get_metas_mes(ano, mes, loja=loja)
+    vendas_df = get_vendas_mes(ano, mes, loja=loja)
+    meta_total = float(metas_df["valor_meta"].sum()) if not metas_df.empty else 0.0
+    realizado_total = float(vendas_df["valor_realizado"].sum()) if not vendas_df.empty else 0.0
+    clientes_total = int(vendas_df["qtd_clientes"].sum()) if not vendas_df.empty else 0
+    return {"meta": meta_total, "realizado": realizado_total, "clientes": clientes_total}
+
+
 def dias_uteis_transcorridos(ano, mes, dias_uteis_total=DIAS_UTEIS_PADRAO, referencia=None):
     """Conta dias úteis (segunda a sábado, domingo não conta) já transcorridos no mês,
     limitado ao total de dias úteis considerados para o mês (padrão 24)."""

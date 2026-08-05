@@ -466,6 +466,52 @@ with tab_dashboard:
 
     st.markdown("---")
 
+    # ---- Comparativo mês a mês e ano a ano ----
+    st.markdown("### 🔄 Comparativo Mês a Mês e Ano a Ano")
+
+    ano_ant, mes_ant = db.mes_anterior(ano_filtro, mes_filtro)
+    totais_mes_anterior = db.get_totais_mes(ano_ant, mes_ant, loja=loja_filtro)
+    totais_ano_anterior = db.get_totais_mes(ano_filtro - 1, mes_filtro, loja=loja_filtro)
+
+    def calcular_crescimento(atual, anterior):
+        if anterior > 0:
+            return (atual - anterior) / anterior * 100
+        return None
+
+    crescimento_mom = calcular_crescimento(realizado_total, totais_mes_anterior["realizado"])
+    crescimento_yoy = calcular_crescimento(realizado_total, totais_ano_anterior["realizado"])
+
+    def cor_crescimento(valor):
+        if valor is None:
+            return "#888888"
+        return VERDE if valor >= 0 else "#e74c3c"
+
+    def texto_crescimento(valor):
+        if valor is None:
+            return "Sem dados no período anterior"
+        seta = "▲" if valor >= 0 else "▼"
+        return f"{seta} {valor:.1f}%"
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    kpi_card(
+        cc1, f"vs. {db.MESES_PT[mes_ant]}/{ano_ant} (Realizado)",
+        db.formatar_moeda(totais_mes_anterior["realizado"]),
+    )
+    kpi_card(
+        cc2, "Crescimento vs. mês anterior", texto_crescimento(crescimento_mom),
+        cor=cor_crescimento(crescimento_mom),
+    )
+    kpi_card(
+        cc3, f"vs. {db.MESES_PT[mes_filtro]}/{ano_filtro - 1} (Realizado)",
+        db.formatar_moeda(totais_ano_anterior["realizado"]),
+    )
+    kpi_card(
+        cc4, "Crescimento vs. mesmo mês ano passado", texto_crescimento(crescimento_yoy),
+        cor=cor_crescimento(crescimento_yoy),
+    )
+
+    st.markdown("---")
+
     # ---- Ranking de vendedores ----
     st.markdown("### 🏆 Ranking de Vendedores")
     if vendas_df.empty:
@@ -552,6 +598,84 @@ with tab_dashboard:
             margin=dict(l=10, r=10, t=30, b=10), height=380,
         )
         st.plotly_chart(fig_evolucao, use_container_width=True)
+
+    st.markdown("---")
+
+    # ---- Vendas por dia da semana (heatmap + ranking de dias) ----
+    st.markdown("### 🔥 Vendas por Dia da Semana — Picos de Movimento")
+
+    dias_semana_nomes = {
+        0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta", 4: "Sexta", 5: "Sábado", 6: "Domingo",
+    }
+
+    if vendas_df.empty:
+        st.info("Sem lançamentos no período para montar o mapa de calor.")
+    else:
+        vendas_semana = vendas_df.copy()
+        vendas_semana["dia_semana"] = vendas_semana["data"].apply(lambda d: d.weekday())
+        vendas_semana["semana_mes"] = vendas_semana["data"].apply(lambda d: (d.day - 1) // 7 + 1)
+
+        col_heat, col_rank_dia = st.columns([2, 1])
+
+        with col_heat:
+            agrupado = (
+                vendas_semana.groupby(["dia_semana", "semana_mes"])["valor_realizado"]
+                .sum()
+                .reset_index()
+            )
+            pivot = agrupado.pivot(index="dia_semana", columns="semana_mes", values="valor_realizado")
+            pivot = pivot.reindex(range(7))
+            colunas_semana = sorted(vendas_semana["semana_mes"].unique())
+            pivot = pivot.reindex(columns=colunas_semana).fillna(0.0)
+
+            texto_hover = [
+                [db.formatar_moeda(v) for v in linha] for linha in pivot.values
+            ]
+
+            fig_heatmap = go.Figure(
+                data=go.Heatmap(
+                    z=pivot.values,
+                    x=[f"Semana {c}" for c in pivot.columns],
+                    y=[dias_semana_nomes[i] for i in pivot.index],
+                    colorscale=[[0, "#f4f6f7"], [1, VERDE]],
+                    text=texto_hover,
+                    texttemplate="%{text}",
+                    textfont={"size": 10},
+                    hoverinfo="skip",
+                )
+            )
+            fig_heatmap.update_layout(
+                title="Realizado por dia da semana x semana do mês",
+                margin=dict(l=10, r=10, t=40, b=10), height=380,
+            )
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+
+        with col_rank_dia:
+            total_por_dia = (
+                vendas_semana.groupby("dia_semana")["valor_realizado"].sum().reindex(range(7)).fillna(0.0)
+            )
+            dia_pico = total_por_dia.idxmax() if total_por_dia.sum() > 0 else None
+            fig_dia_semana = go.Figure(
+                go.Bar(
+                    x=total_por_dia.values,
+                    y=[dias_semana_nomes[i] for i in total_por_dia.index],
+                    orientation="h",
+                    marker_color=[
+                        VERDE if i == dia_pico else AZUL_CLARO for i in total_por_dia.index
+                    ],
+                    text=[db.formatar_moeda(v) for v in total_por_dia.values],
+                    textposition="outside",
+                )
+            )
+            fig_dia_semana.update_layout(
+                title="Total por dia da semana",
+                margin=dict(l=10, r=10, t=40, b=10), height=380,
+                xaxis_title="R$",
+            )
+            st.plotly_chart(fig_dia_semana, use_container_width=True)
+
+            if dia_pico is not None:
+                st.caption(f"📌 Dia de maior movimento no período: **{dias_semana_nomes[dia_pico]}**.")
 
     st.markdown("---")
 
