@@ -522,6 +522,58 @@ def get_totais_mes(ano, mes, loja=None):
     return {"meta": meta_total, "realizado": realizado_total, "clientes": clientes_total}
 
 
+def get_indicadores_vendedores_mes(ano, mes, loja=None):
+    """Uma linha por vendedor ativo com meta, realizado (diário + manual), clientes
+    (diário + manual), atingimento (%) e ticket médio individual do mês — já
+    combinando todas as fontes de dado (lançamento diário e importações manuais)."""
+    metas_df = get_metas_mes(ano, mes, loja=loja)
+    vendas_df = get_vendas_mes(ano, mes, loja=loja)
+    manual_df = get_realizado_manual_mes(ano, mes, loja=loja)
+    clientes_manual_df = get_clientes_manual_mes(ano, mes, loja=loja)
+
+    if vendas_df.empty:
+        vendas_agg = pd.DataFrame(columns=["vendedor_id", "realizado", "clientes"])
+    else:
+        vendas_agg = (
+            vendas_df.groupby("vendedor_id")
+            .agg(realizado=("valor_realizado", "sum"), clientes=("qtd_clientes", "sum"))
+            .reset_index()
+        )
+
+    if not manual_df.empty:
+        manual_agg = (
+            manual_df.groupby("vendedor_id")["valor_realizado"].sum().reset_index()
+            .rename(columns={"valor_realizado": "realizado_manual"})
+        )
+        vendas_agg = vendas_agg.merge(manual_agg, on="vendedor_id", how="outer").fillna(0)
+        vendas_agg["realizado"] = vendas_agg["realizado"] + vendas_agg["realizado_manual"]
+        vendas_agg = vendas_agg.drop(columns=["realizado_manual"])
+
+    if not clientes_manual_df.empty:
+        cm_agg = (
+            clientes_manual_df.groupby("vendedor_id")["qtd_clientes"].sum().reset_index()
+            .rename(columns={"qtd_clientes": "clientes_manual"})
+        )
+        vendas_agg = vendas_agg.merge(cm_agg, on="vendedor_id", how="outer").fillna(0)
+        vendas_agg["realizado"] = vendas_agg["realizado"].fillna(0.0)
+        vendas_agg["clientes"] = vendas_agg["clientes"] + vendas_agg["clientes_manual"]
+        vendas_agg = vendas_agg.drop(columns=["clientes_manual"])
+
+    if "clientes" in vendas_agg.columns and not vendas_agg.empty:
+        vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
+
+    resultado = metas_df.merge(vendas_agg, on="vendedor_id", how="left")
+    resultado["realizado"] = resultado["realizado"].fillna(0.0)
+    resultado["clientes"] = resultado["clientes"].fillna(0).astype(int)
+    resultado["atingimento_pct"] = resultado.apply(
+        lambda r: (r["realizado"] / r["valor_meta"] * 100) if r["valor_meta"] > 0 else 0.0, axis=1
+    )
+    resultado["ticket_medio"] = resultado.apply(
+        lambda r: (r["realizado"] / r["clientes"]) if r["clientes"] > 0 else 0.0, axis=1
+    )
+    return resultado
+
+
 def dias_uteis_transcorridos(ano, mes, dias_uteis_total=DIAS_UTEIS_PADRAO, referencia=None):
     """Conta dias úteis (segunda a sábado, domingo não conta) já transcorridos no mês,
     limitado ao total de dias úteis considerados para o mês (padrão 24)."""

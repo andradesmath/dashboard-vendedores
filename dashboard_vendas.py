@@ -986,46 +986,10 @@ with tab_dashboard:
 
     # ---- Ranking de vendedores ----
     st.markdown("### 🏆 Ranking de Vendedores")
-    if vendas_df.empty:
-        vendas_agg = pd.DataFrame(columns=["vendedor_id", "realizado", "clientes"])
-    else:
-        vendas_agg = (
-            vendas_df.groupby("vendedor_id")
-            .agg(realizado=("valor_realizado", "sum"), clientes=("qtd_clientes", "sum"))
-            .reset_index()
-        )
-
-    if not manual_df.empty:
-        manual_agg = (
-            manual_df.groupby("vendedor_id")["valor_realizado"].sum().reset_index()
-            .rename(columns={"valor_realizado": "realizado_manual"})
-        )
-        vendas_agg = vendas_agg.merge(manual_agg, on="vendedor_id", how="outer").fillna(0)
-        vendas_agg["realizado"] = vendas_agg["realizado"] + vendas_agg["realizado_manual"]
-        vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
-        vendas_agg = vendas_agg.drop(columns=["realizado_manual"])
-
-    if not clientes_manual_df.empty:
-        clientes_manual_agg = (
-            clientes_manual_df.groupby("vendedor_id")["qtd_clientes"].sum().reset_index()
-            .rename(columns={"qtd_clientes": "clientes_manual"})
-        )
-        vendas_agg = vendas_agg.merge(clientes_manual_agg, on="vendedor_id", how="outer").fillna(0)
-        vendas_agg["realizado"] = vendas_agg["realizado"].fillna(0.0)
-        vendas_agg["clientes"] = vendas_agg["clientes"] + vendas_agg["clientes_manual"]
-        vendas_agg["clientes"] = vendas_agg["clientes"].astype(int)
-        vendas_agg = vendas_agg.drop(columns=["clientes_manual"])
-
-    ranking = metas_df.merge(vendas_agg, on="vendedor_id", how="left")
-    ranking["realizado"] = ranking["realizado"].fillna(0.0)
-    ranking["clientes"] = ranking["clientes"].fillna(0).astype(int)
-    ranking["atingimento_pct"] = ranking.apply(
-        lambda r: (r["realizado"] / r["valor_meta"] * 100) if r["valor_meta"] > 0 else 0.0, axis=1
+    indicadores_atual = db.get_indicadores_vendedores_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    ranking = indicadores_atual.rename(columns={"ticket_medio": "ticket_medio_ind"}).sort_values(
+        "realizado", ascending=False
     )
-    ranking["ticket_medio_ind"] = ranking.apply(
-        lambda r: (r["realizado"] / r["clientes"]) if r["clientes"] > 0 else 0.0, axis=1
-    )
-    ranking = ranking.sort_values("realizado", ascending=False)
 
     if ranking.empty:
         st.info("Nenhum vendedor ativo para o filtro selecionado.")
@@ -1182,8 +1146,13 @@ with tab_dashboard:
         clientes_l = totais_loja["clientes"]
         atingimento_l = (realizado_l / meta_l * 100) if meta_l > 0 else 0.0
         ticket_l = (realizado_l / clientes_l) if clientes_l > 0 else 0.0
+        n_vendedores_l = len(db.get_vendedores(loja=loja_nome, apenas_ativos=True))
+        meta_per_capita_l = (meta_l / n_vendedores_l) if n_vendedores_l > 0 else 0.0
         comparativo.append(
-            {"loja": loja_nome, "atingimento": atingimento_l, "ticket_medio": ticket_l}
+            {
+                "loja": loja_nome, "atingimento": atingimento_l, "ticket_medio": ticket_l,
+                "n_vendedores": n_vendedores_l, "meta_per_capita": meta_per_capita_l,
+            }
         )
     comp_df = pd.DataFrame(comparativo)
 
@@ -1220,6 +1189,237 @@ with tab_dashboard:
         f"{dias_uteis_total} dias úteis (segunda a sábado, editável acima para refletir feriados). "
         "Semáforo: 🔴 abaixo de 70% · 🟡 70% a 90% · 🟢 acima de 90%."
     )
+
+    cap1, cap2 = st.columns(2)
+    for col_capita, row_capita in zip([cap1, cap2], comp_df.itertuples()):
+        kpi_card(
+            col_capita,
+            f"Meta per Capita — {row_capita.loja} ({row_capita.n_vendedores} vendedor(es))",
+            db.formatar_moeda(row_capita.meta_per_capita),
+        )
+
+    st.markdown("---")
+
+    # ---- Indicadores Avançados por Vendedor ----
+    st.markdown("### 📐 Indicadores Avançados por Vendedor")
+    st.caption(
+        "Consistência e comparação individual dentro do mês selecionado. Métricas que dependem "
+        "de granularidade diária (dias sem lançamento, desvio padrão, % de dias com meta batida, "
+        "melhor dia) usam só os lançamentos diários — não incluem realizado/clientes importados "
+        "como total mensal."
+    )
+
+    if vendas_df.empty or dias_transcorridos == 0:
+        st.info("Sem lançamentos diários suficientes no período para calcular estes indicadores.")
+    else:
+        meta_diaria_map = (
+            indicadores_atual.set_index("vendedor_id")["valor_meta"] / dias_uteis_total
+            if dias_uteis_total > 0 else indicadores_atual.set_index("vendedor_id")["valor_meta"] * 0
+        )
+
+        ticket_medio_loja_map = (
+            indicadores_atual[indicadores_atual["clientes"] > 0]
+            .groupby("loja")
+            .apply(lambda g: g["realizado"].sum() / g["clientes"].sum() if g["clientes"].sum() > 0 else 0.0)
+        )
+
+        linhas_avancado = []
+        for row in indicadores_atual.itertuples():
+            dados_vend = vendas_df[vendas_df["vendedor_id"] == row.vendedor_id]
+            dias_com_lancamento = dados_vend["data"].nunique() if not dados_vend.empty else 0
+            dias_sem_lancamento = max(dias_transcorridos - dias_com_lancamento, 0)
+
+            desvio_padrao = float(dados_vend["valor_realizado"].std(ddof=0)) if len(dados_vend) > 1 else 0.0
+
+            meta_diaria_ind = float(meta_diaria_map.get(row.vendedor_id, 0.0))
+            dias_bateram_meta = (
+                int((dados_vend["valor_realizado"] >= meta_diaria_ind).sum())
+                if not dados_vend.empty and meta_diaria_ind > 0 else 0
+            )
+            pct_dias_meta = (dias_bateram_meta / dias_transcorridos * 100) if dias_transcorridos > 0 else 0.0
+
+            if not dados_vend.empty:
+                idx_melhor = dados_vend["valor_realizado"].idxmax()
+                melhor_dia_data = dados_vend.loc[idx_melhor, "data"]
+                melhor_dia_valor = dados_vend.loc[idx_melhor, "valor_realizado"]
+            else:
+                melhor_dia_data = None
+                melhor_dia_valor = 0.0
+
+            ticket_medio_loja = float(ticket_medio_loja_map.get(row.loja, 0.0))
+            gap_ticket = row.ticket_medio - ticket_medio_loja
+
+            linhas_avancado.append({
+                "nome": row.nome,
+                "loja": row.loja,
+                "dias_sem_lancamento": dias_sem_lancamento,
+                "desvio_padrao": desvio_padrao,
+                "pct_dias_meta": pct_dias_meta,
+                "melhor_dia_data": melhor_dia_data,
+                "melhor_dia_valor": melhor_dia_valor,
+                "gap_ticket": gap_ticket,
+            })
+
+        avancado_df = pd.DataFrame(linhas_avancado)
+        avancado_fmt = avancado_df.copy()
+        avancado_fmt["Dias sem Lançamento"] = avancado_fmt["dias_sem_lancamento"]
+        avancado_fmt["Desvio Padrão Diário"] = avancado_fmt["desvio_padrao"].apply(db.formatar_moeda)
+        avancado_fmt["% Dias com Meta Batida"] = avancado_fmt["pct_dias_meta"].apply(lambda v: f"{v:.1f}%")
+        avancado_fmt["Melhor Dia"] = avancado_fmt.apply(
+            lambda r: (
+                f"{r['melhor_dia_data'].strftime('%d/%m')} ({db.formatar_moeda(r['melhor_dia_valor'])})"
+                if r["melhor_dia_data"] is not None else "—"
+            ),
+            axis=1,
+        )
+        avancado_fmt["Ticket vs. Média da Loja"] = avancado_fmt["gap_ticket"].apply(
+            lambda v: f"{'+' if v >= 0 else ''}{db.formatar_moeda(v)}"
+        )
+        st.dataframe(
+            avancado_fmt[
+                ["nome", "loja", "Dias sem Lançamento", "Desvio Padrão Diário",
+                 "% Dias com Meta Batida", "Melhor Dia", "Ticket vs. Média da Loja"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Dias sem lançamento: dias úteis transcorridos sem nenhum registro de venda para o "
+            "vendedor. Desvio padrão alto = dias muito irregulares. % Dias com Meta Batida compara "
+            "o realizado de cada dia com a meta diária proporcional do vendedor (meta ÷ dias úteis "
+            "do mês). Ticket vs. Média da Loja: positivo (verde) = ticket acima da média da loja."
+        )
+
+    st.markdown("---")
+
+    # ---- Tendência: aceleração na quinzena e evolução de 3 meses ----
+    st.markdown("### 📉 Tendência")
+
+    st.markdown("##### Aceleração dentro do mês (1ª quinzena x 2ª quinzena)")
+    if vendas_df.empty:
+        st.info("Sem lançamentos diários no período para calcular a aceleração quinzenal.")
+    else:
+        vendas_quinzena = vendas_df.copy()
+        vendas_quinzena["quinzena"] = vendas_quinzena["data"].apply(
+            lambda d: "1ª Quinzena" if d.day <= 15 else "2ª Quinzena"
+        )
+        pivot_quinzena = (
+            vendas_quinzena.groupby(["vendedor_id", "quinzena"])["valor_realizado"]
+            .sum()
+            .reset_index()
+            .pivot(index="vendedor_id", columns="quinzena", values="valor_realizado")
+            .reset_index()
+        )
+        for col in ["1ª Quinzena", "2ª Quinzena"]:
+            if col not in pivot_quinzena.columns:
+                pivot_quinzena[col] = 0.0
+        pivot_quinzena = pivot_quinzena.fillna(0.0)
+
+        quinzena_df = indicadores_atual[["vendedor_id", "nome", "loja"]].merge(
+            pivot_quinzena, on="vendedor_id", how="left"
+        ).fillna(0.0)
+        quinzena_df["variacao_pct"] = quinzena_df.apply(
+            lambda r: (
+                (r["2ª Quinzena"] - r["1ª Quinzena"]) / r["1ª Quinzena"] * 100
+            ) if r["1ª Quinzena"] > 0 else None,
+            axis=1,
+        )
+        quinzena_df = quinzena_df.sort_values("2ª Quinzena", ascending=False)
+
+        quinzena_fmt = quinzena_df.copy()
+        quinzena_fmt["1ª Quinzena (R$)"] = quinzena_fmt["1ª Quinzena"].apply(db.formatar_moeda)
+        quinzena_fmt["2ª Quinzena (R$)"] = quinzena_fmt["2ª Quinzena"].apply(db.formatar_moeda)
+        quinzena_fmt["Variação"] = quinzena_fmt["variacao_pct"].apply(
+            lambda v: "—" if v is None else f"{'▲' if v >= 0 else '▼'} {v:.1f}%"
+        )
+        st.dataframe(
+            quinzena_fmt[
+                ["nome", "loja", "1ª Quinzena (R$)", "2ª Quinzena (R$)", "Variação"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("##### Tendência de atingimento (últimos 3 meses)")
+    ano_m1, mes_m1 = db.mes_anterior(ano_filtro, mes_filtro)
+    ano_m2, mes_m2 = db.mes_anterior(ano_m1, mes_m1)
+
+    ind_m1 = db.get_indicadores_vendedores_mes(ano_m1, mes_m1, loja=loja_filtro)[
+        ["vendedor_id", "atingimento_pct"]
+    ].rename(columns={"atingimento_pct": "m1"})
+    ind_m2 = db.get_indicadores_vendedores_mes(ano_m2, mes_m2, loja=loja_filtro)[
+        ["vendedor_id", "atingimento_pct"]
+    ].rename(columns={"atingimento_pct": "m2"})
+
+    tendencia_df = indicadores_atual[["vendedor_id", "nome", "loja", "atingimento_pct"]].rename(
+        columns={"atingimento_pct": "atual"}
+    )
+    tendencia_df = tendencia_df.merge(ind_m1, on="vendedor_id", how="left").merge(
+        ind_m2, on="vendedor_id", how="left"
+    ).fillna(0.0)
+
+    def classificar_tendencia(row):
+        if row["atual"] < row["m1"] < row["m2"]:
+            return "📉 Queda"
+        if row["atual"] > row["m1"] > row["m2"]:
+            return "📈 Alta"
+        return "➡️ Estável"
+
+    tendencia_df["Tendência"] = tendencia_df.apply(classificar_tendencia, axis=1)
+    tendencia_fmt = tendencia_df.copy()
+    tendencia_fmt[f"{db.MESES_PT[mes_m2]}/{ano_m2}"] = tendencia_fmt["m2"].apply(lambda v: f"{v:.1f}%")
+    tendencia_fmt[f"{db.MESES_PT[mes_m1]}/{ano_m1}"] = tendencia_fmt["m1"].apply(lambda v: f"{v:.1f}%")
+    tendencia_fmt[f"{db.MESES_PT[mes_filtro]}/{ano_filtro} (atual)"] = tendencia_fmt["atual"].apply(
+        lambda v: f"{v:.1f}%"
+    )
+    st.dataframe(
+        tendencia_fmt[
+            ["nome", "loja", f"{db.MESES_PT[mes_m2]}/{ano_m2}", f"{db.MESES_PT[mes_m1]}/{ano_m1}",
+             f"{db.MESES_PT[mes_filtro]}/{ano_filtro} (atual)", "Tendência"]
+        ].rename(columns={"nome": "Nome", "loja": "Loja"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption("Atingimento (%) = realizado ÷ meta do mês. Queda/Alta exige 3 meses seguidos na mesma direção.")
+
+    st.markdown("---")
+
+    # ---- Curva de concentração (Pareto 80/20) ----
+    st.markdown("### 🎯 Curva de Concentração (Pareto 80/20)")
+    if indicadores_atual.empty or indicadores_atual["realizado"].sum() <= 0:
+        st.info("Sem realizado no período para montar a curva de concentração.")
+    else:
+        pareto_df = indicadores_atual.sort_values("realizado", ascending=False).reset_index(drop=True)
+        total_pareto = pareto_df["realizado"].sum()
+        pareto_df["cum_pct"] = pareto_df["realizado"].cumsum() / total_pareto * 100
+
+        fig_pareto = go.Figure()
+        fig_pareto.add_trace(
+            go.Bar(x=pareto_df["nome"], y=pareto_df["realizado"], name="Realizado",
+                   marker_color=AZUL_CLARO, yaxis="y1")
+        )
+        fig_pareto.add_trace(
+            go.Scatter(x=pareto_df["nome"], y=pareto_df["cum_pct"], name="% Acumulado",
+                       mode="lines+markers", line=dict(color=VERDE, width=2), yaxis="y2")
+        )
+        fig_pareto.update_layout(
+            yaxis=dict(title="Realizado (R$)"),
+            yaxis2=dict(title="% Acumulado", overlaying="y", side="right", range=[0, 110]),
+            shapes=[dict(
+                type="line", xref="paper", x0=0, x1=1, y0=80, y1=80, yref="y2",
+                line=dict(color="#e74c3c", dash="dot", width=1.5),
+            )],
+            legend=dict(orientation="h", y=-0.3),
+            margin=dict(l=10, r=10, t=30, b=10), height=420,
+        )
+        st.plotly_chart(fig_pareto, use_container_width=True)
+
+        n_concentra_80 = int((pareto_df["cum_pct"] < 80).sum()) + 1
+        n_concentra_80 = min(n_concentra_80, len(pareto_df))
+        st.caption(
+            f"📌 {n_concentra_80} de {len(pareto_df)} vendedor(es) concentram 80% do realizado "
+            f"do filtro selecionado (linha vermelha pontilhada = 80% acumulado)."
+        )
 
     st.markdown("---")
 
