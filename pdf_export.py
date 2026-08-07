@@ -84,14 +84,24 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
         "pct_np_historico": next(
             (l["media_historica_pct"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
         ) if mix_hist_total > 0 else None,
-        **_kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total),
+        **_kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total, mix_hist_total),
     }
 
 
-def _kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total):
-    """Índice de inadimplência do mês (se já lançado), série histórica, tendência
-    (regressão linear) e o valor esperado em risco (valor vendido a prazo no mês ×
-    a taxa histórica de inadimplência do próprio vendedor)."""
+def _kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total, mix_hist_total):
+    """Risco de inadimplência das vendas a prazo (Nota Promissória), ponderando o
+    ACUMULADO histórico já vendido a prazo contra o que ficou em atraso nos meses
+    subsequentes — não só o mês específico do relatório (que costuma vir zerado
+    quando o vendedor não vendeu a prazo naquele mês em particular)."""
+    pct_np_hist = next(
+        (l["media_historica_pct"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
+    )
+    # Total histórico vendido a prazo: TODO o mix já lançado (diário + manual), não só
+    # os meses em que a inadimplência foi apurada — é a exposição acumulada real.
+    total_vendido_prazo_historico = (pct_np_hist / 100 * mix_hist_total) if mix_hist_total > 0 else 0.0
+
+    # Contexto do mês específico do relatório (pode vir zerado — normal se o vendedor
+    # não vendeu a prazo naquele mês em particular).
     valor_a_prazo_mes = (
         next((l["valor_mes"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0)
         if mix_mes_total > 0 else 0.0
@@ -104,26 +114,65 @@ def _kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total):
 
     resumo = db.get_indice_inadimplencia_resumo_vendedor(vendedor_id)
     hist = resumo["historico"]
-    hist_valida = hist[hist["indice_pct"].notna()] if not hist.empty else hist
+    hist_avaliada = hist[hist["valor_a_prazo"] > 0] if not hist.empty else hist
+
+    total_avaliado = float(hist_avaliada["valor_a_prazo"].sum()) if not hist_avaliada.empty else 0.0
+    total_aberto_acumulado = float(hist_avaliada["valor_em_aberto"].sum()) if not hist_avaliada.empty else 0.0
+    cobertura_pct = (
+        (total_avaliado / total_vendido_prazo_historico * 100)
+        if total_vendido_prazo_historico > 0 else None
+    )
+
+    hist_com_indice = (
+        hist_avaliada[hist_avaliada["indice_pct"].notna()] if not hist_avaliada.empty else hist_avaliada
+    )
+    n_meses = len(hist_com_indice)
+
     slope = None
-    if len(hist_valida) >= 3:
-        xs = np.arange(len(hist_valida), dtype=float)
-        ys = hist_valida["indice_pct"].to_numpy(dtype=float)
+    if n_meses >= 3:
+        xs = np.arange(n_meses, dtype=float)
+        ys = hist_com_indice["indice_pct"].to_numpy(dtype=float)
         slope = float(np.polyfit(xs, ys, 1)[0])
 
+    # Margem de confiabilidade: dispersão (desvio padrão amostral) dos índices mensais
+    # em torno da média — quanto maior a dispersão e menor o nº de meses, menos
+    # confiável é usar a média histórica como previsão do risco atual.
+    desvio_pct = float(hist_com_indice["indice_pct"].std(ddof=1)) if n_meses >= 2 else None
+    if n_meses < 3:
+        confiabilidade = "Baixa (poucos meses de dado)"
+    elif n_meses < 6:
+        confiabilidade = "Média"
+    else:
+        confiabilidade = "Alta"
+
+    media_pct = resumo["media_ponderada_pct"]
+    # Risco atual estimado: projeta a média histórica um passo à frente usando a
+    # tendência (regressão linear) — mais realista que só repetir a média histórica
+    # "congelada" quando o índice está claramente subindo ou caindo.
+    risco_atual_estimado = None
+    if media_pct is not None:
+        risco_atual_estimado = max(0.0, media_pct + (slope if slope is not None else 0.0))
+
     valor_esperado_perda = (
-        valor_a_prazo_mes * resumo["media_ponderada_pct"] / 100
-        if resumo["media_ponderada_pct"] is not None else None
+        total_vendido_prazo_historico * media_pct / 100 if media_pct is not None else None
     )
 
     return {
+        "inadimp_total_vendido_prazo_historico": total_vendido_prazo_historico,
+        "inadimp_total_avaliado_prazo": total_avaliado,
+        "inadimp_total_aberto_acumulado": total_aberto_acumulado,
+        "inadimp_cobertura_pct": cobertura_pct,
         "inadimp_valor_a_prazo_mes": valor_a_prazo_mes,
         "inadimp_valor_em_aberto_mes": valor_em_aberto_mes,
         "inadimp_indice_mes_pct": indice_mes_pct,
-        "inadimp_media_historica_pct": resumo["media_ponderada_pct"],
-        "inadimp_n_meses": resumo["n_meses"],
+        "inadimp_media_historica_pct": media_pct,
+        "inadimp_n_meses": n_meses,
         "inadimp_slope": slope,
+        "inadimp_desvio_pct": desvio_pct,
+        "inadimp_confiabilidade": confiabilidade,
+        "inadimp_risco_atual_estimado_pct": risco_atual_estimado,
         "inadimp_nivel_risco": resumo["nivel_risco"],
+        "inadimp_nivel_risco_atual": db.nivel_risco_inadimplencia(risco_atual_estimado),
         "inadimp_valor_esperado_perda": valor_esperado_perda,
     }
 
@@ -277,8 +326,8 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
         ))
         elementos.append(Spacer(1, 0.3 * cm))
 
-    if kpis["inadimp_valor_a_prazo_mes"] > 0 or kpis["inadimp_n_meses"] > 0:
-        elementos.append(Paragraph("Inadimplência (Vendas a Prazo)", secao_style))
+    if kpis["inadimp_total_vendido_prazo_historico"] > 0 or kpis["inadimp_n_meses"] > 0:
+        elementos.append(Paragraph("Risco de Inadimplência em Vendas a Prazo (Nota Promissória)", secao_style))
         elementos.append(Spacer(1, 0.2 * cm))
 
         tendencia_txt = "—"
@@ -287,34 +336,47 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
             rotulo_slope = "piorando" if slope > 0.5 else ("melhorando" if slope < -0.5 else "estável")
             tendencia_txt = f"{'+' if slope >= 0 else ''}{slope:.2f} pp/mês ({rotulo_slope})"
 
+        margem_txt = "— (dados insuficientes)"
+        if kpis["inadimp_desvio_pct"] is not None:
+            margem_txt = (
+                f"± {kpis['inadimp_desvio_pct']:.1f} pp — confiabilidade {kpis['inadimp_confiabilidade']} "
+                f"({kpis['inadimp_n_meses']} meses de dado)"
+            )
+        elif kpis["inadimp_n_meses"] > 0:
+            margem_txt = f"— confiabilidade {kpis['inadimp_confiabilidade']} ({kpis['inadimp_n_meses']} mês de dado)"
+
+        cobertura_txt = "—"
+        if kpis["inadimp_cobertura_pct"] is not None:
+            cobertura_txt = (
+                f"{kpis['inadimp_cobertura_pct']:.0f}% do total histórico "
+                f"({db.formatar_moeda(kpis['inadimp_total_avaliado_prazo'])})"
+            )
+
+        risco_atual_txt = "—"
+        if kpis["inadimp_risco_atual_estimado_pct"] is not None:
+            risco_atual_txt = (
+                f"{kpis['inadimp_risco_atual_estimado_pct']:.1f}% ({kpis['inadimp_nivel_risco_atual']})"
+            )
+
         dados_inadimp = [
             ["Indicador", "Valor"],
             [
-                "Valor vendido a prazo (mês)",
-                db.formatar_moeda(kpis["inadimp_valor_a_prazo_mes"]),
+                "Total vendido a prazo (soma de tudo)",
+                db.formatar_moeda(kpis["inadimp_total_vendido_prazo_historico"]),
+            ],
+            ["Cobertura da análise", cobertura_txt],
+            [
+                "Total em aberto acumulado",
+                db.formatar_moeda(kpis["inadimp_total_aberto_acumulado"]),
             ],
             [
-                "Valor em aberto (mês)",
-                db.formatar_moeda(kpis["inadimp_valor_em_aberto_mes"])
-                if kpis["inadimp_valor_em_aberto_mes"] is not None else "— não lançado",
-            ],
-            [
-                "Índice de inadimplência (mês)",
-                f"{kpis['inadimp_indice_mes_pct']:.1f}%" if kpis["inadimp_indice_mes_pct"] is not None else "—",
-            ],
-            [
-                "Média histórica ponderada (%)",
+                "Índice de inadimplência histórico",
                 f"{kpis['inadimp_media_historica_pct']:.1f}%"
                 if kpis["inadimp_media_historica_pct"] is not None else "—",
             ],
-            ["Meses com dado histórico", str(kpis["inadimp_n_meses"])],
+            ["Margem de confiabilidade", margem_txt],
             ["Tendência", tendencia_txt],
-            ["Nível de risco (histórico)", kpis["inadimp_nivel_risco"]],
-            [
-                "Valor esperado em risco (mês atual)",
-                db.formatar_moeda(kpis["inadimp_valor_esperado_perda"])
-                if kpis["inadimp_valor_esperado_perda"] is not None else "—",
-            ],
+            ["Risco atual estimado", risco_atual_txt],
         ]
         tabela_inadimp = Table(dados_inadimp, colWidths=[8.5 * cm, 7.5 * cm])
         tabela_inadimp.setStyle(TableStyle([
@@ -330,15 +392,33 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
         ]))
         elementos.append(tabela_inadimp)
         elementos.append(Spacer(1, 0.15 * cm))
+
+        if kpis["inadimp_valor_a_prazo_mes"] > 0:
+            aberto_mes_txt = (
+                db.formatar_moeda(kpis["inadimp_valor_em_aberto_mes"])
+                if kpis["inadimp_valor_em_aberto_mes"] is not None else "não lançado ainda"
+            )
+            elementos.append(Paragraph(
+                f"No mês do relatório: vendeu {db.formatar_moeda(kpis['inadimp_valor_a_prazo_mes'])} a "
+                f"prazo, em aberto: {aberto_mes_txt}"
+                + (f" (índice do mês: {kpis['inadimp_indice_mes_pct']:.1f}%)"
+                   if kpis["inadimp_indice_mes_pct"] is not None else ""),
+                sub_style,
+            ))
+            elementos.append(Spacer(1, 0.15 * cm))
+
         elementos.append(Paragraph(
-            "Metodologia: Índice de inadimplência = valor em aberto ÷ valor vendido a "
-            "prazo (Nota Promissória) daquele mês de venda — o valor em aberto só é "
-            "apurado a partir de 30 dias, quando o prazo já venceu. Média histórica "
-            "ponderada = soma de todo valor em aberto já lançado ÷ soma de todo o valor "
-            "vendido a prazo (todos os meses). Tendência = inclinação da regressão "
-            "linear do índice mensal (mín. 3 meses com dado). Valor esperado em risco = "
-            "valor vendido a prazo no mês do relatório × a taxa histórica de "
-            f"inadimplência do vendedor. Faixas de risco: 🟢 Baixo "
+            "Metodologia: pondera o ACUMULADO de vendas a prazo (Nota Promissória) contra o "
+            "que ficou em atraso nos meses subsequentes, não só o mês do relatório. Total "
+            "vendido a prazo = soma de toda a Nota Promissória já lançada no mix de pagamento "
+            "(histórico completo). Cobertura = quanto desse total já tem um resultado de "
+            "cobrança conhecido (valor em aberto apurado a partir de 30 dias). Índice de "
+            "inadimplência histórico = total em aberto ÷ total avaliado, ponderado por R$. "
+            "Margem de confiabilidade = desvio padrão dos índices mensais — quanto maior a "
+            "dispersão e menos meses de dado, menos confiável é usar a média como previsão. "
+            "Tendência = inclinação da regressão linear do índice mensal (mín. 3 meses). "
+            "Risco atual estimado = índice histórico ajustado pela tendência (projeção de um "
+            f"mês à frente), não a média 'congelada'. Faixas de risco: 🟢 Baixo "
             f"(&lt; {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
             f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
             f"🔴 Alto (&gt; {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%).",
