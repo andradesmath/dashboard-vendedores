@@ -543,6 +543,54 @@ with tab_metas:
                     st.rerun()
 
     st.markdown("---")
+    st.subheader("💸 Valores em aberto (vendas a prazo / Nota Promissória)")
+    st.caption(
+        "O risco de um mês só se confirma nos meses seguintes: o valor vendido a prazo "
+        "(Nota Promissória) num mês deveria ser recebido a partir do mês seguinte. Lance "
+        "aqui o valor que ainda está em aberto (não recebido) daquele mês de VENDA, "
+        "a partir de 30 dias — ex.: vendeu R$ 100 mil a prazo em fevereiro, recebeu R$ 98 "
+        "mil, lance R$ 2.000,00 em aberto para fevereiro. Pode atualizar o mesmo mês "
+        "conforme a cobrança evolui."
+    )
+    vendedores_df_inadimp = db.get_vendedores(apenas_ativos=True)
+    if vendedores_df_inadimp.empty:
+        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
+    else:
+        with st.form("form_inadimplencia", clear_on_submit=False):
+            coli1, coli2, coli3, coli4 = st.columns(4)
+            opcoes_vend_ina = {
+                f"{row['nome']} ({row['loja']})": row["id"]
+                for _, row in vendedores_df_inadimp.iterrows()
+            }
+            with coli1:
+                escolha_vend_ina = st.selectbox("Vendedor *", list(opcoes_vend_ina.keys()), key="sel_inadimp")
+            with coli2:
+                ano_ina = st.number_input(
+                    "Ano da venda *", min_value=2020, max_value=2035, value=date.today().year,
+                    step=1, key="ano_inadimp",
+                )
+            with coli3:
+                mes_ina = st.selectbox(
+                    "Mês da venda *", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                    index=date.today().month - 1, key="mes_inadimp",
+                )
+            with coli4:
+                valor_aberto_ina = st.number_input(
+                    "Valor em aberto (R$) *", min_value=0.0, step=100.0, format="%.2f", key="valor_inadimp"
+                )
+
+            enviado_inadimp = st.form_submit_button("💾 Salvar valor em aberto")
+            if enviado_inadimp:
+                vendedor_id_ina = opcoes_vend_ina[escolha_vend_ina]
+                db.upsert_inadimplencia(vendedor_id_ina, int(ano_ina), int(mes_ina), float(valor_aberto_ina))
+                st.success(
+                    f"Valor em aberto salvo: {escolha_vend_ina} — vendas de "
+                    f"{db.MESES_PT[mes_ina]}/{ano_ina} — {db.formatar_moeda(valor_aberto_ina)} em aberto."
+                )
+                st.session_state.versao_dados += 1
+                st.rerun()
+
+    st.markdown("---")
     with st.expander("📥 Importar histórico de Meta x Realizado (meses anteriores)"):
         st.caption(
             "Cole uma linha por lançamento, no formato: Vendedor [TAB] Mês/Ano [TAB] Meta (R$) "
@@ -1949,6 +1997,120 @@ with tab_dashboard:
             ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
             use_container_width=True,
             hide_index=True,
+        )
+
+    st.markdown("---")
+
+    # ---- Índice de Inadimplência (vendas a prazo) ----
+    st.markdown("### 📉 Índice de Inadimplência (Vendas a Prazo)")
+    st.caption(
+        "Cruza o valor vendido a prazo (Nota Promissória) de cada mês com o valor em "
+        "aberto lançado para esse mesmo mês de venda (aba Metas → 'Valores em aberto'). "
+        "Índice = valor em aberto ÷ valor vendido a prazo. Faixas: 🟢 Baixo "
+        f"(< {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
+        f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
+        f"🔴 Alto (> {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%)."
+    )
+
+    st.markdown(f"##### Vendas de {db.MESES_PT[mes_filtro]}/{ano_filtro}")
+    inadimp_mes_df = db.get_inadimplencia_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    if inadimp_mes_df.empty:
+        st.info("Nenhum vendedor ativo no filtro selecionado.")
+    else:
+        sem_dado_ina = inadimp_mes_df[inadimp_mes_df["valor_em_aberto"].isna()]
+        com_prazo_sem_dado = sem_dado_ina[sem_dado_ina["valor_a_prazo"] > 0]
+        if not com_prazo_sem_dado.empty:
+            st.caption(
+                "ℹ️ Venderam a prazo neste mês mas ainda sem valor em aberto lançado: "
+                + ", ".join(com_prazo_sem_dado["nome"].tolist())
+            )
+
+        inadimp_fmt = inadimp_mes_df.copy()
+        inadimp_fmt["Valor a Prazo"] = inadimp_fmt["valor_a_prazo"].apply(db.formatar_moeda)
+        inadimp_fmt["Valor em Aberto"] = inadimp_fmt["valor_em_aberto"].apply(
+            lambda v: db.formatar_moeda(v) if v is not None else "— não lançado"
+        )
+        inadimp_fmt["Índice (%)"] = inadimp_fmt["indice_pct"].apply(
+            lambda v: f"{v:.1f}%" if v is not None else "—"
+        )
+        st.dataframe(
+            inadimp_fmt[
+                ["nome", "loja", "Valor a Prazo", "Valor em Aberto", "Índice (%)", "nivel_risco"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("##### Série histórica, tendência e correção do risco por vendedor")
+    linhas_resumo_inadimp = []
+    for row in indicadores_atual.itertuples():
+        resumo_ina = db.get_indice_inadimplencia_resumo_vendedor(row.vendedor_id)
+        hist_ina = resumo_ina["historico"]
+        hist_valida_ina = hist_ina[hist_ina["indice_pct"].notna()] if not hist_ina.empty else hist_ina
+
+        slope_ina = None
+        if len(hist_valida_ina) >= 3:
+            xs_ina = np.arange(len(hist_valida_ina), dtype=float)
+            ys_ina = hist_valida_ina["indice_pct"].to_numpy(dtype=float)
+            slope_ina = float(np.polyfit(xs_ina, ys_ina, 1)[0])
+
+        valores_mes_atual_ina, _ = db.get_mix_pagamento_vendedor_mes(row.vendedor_id, ano_filtro, mes_filtro)
+        valor_a_prazo_atual = valores_mes_atual_ina.get("Nota Promissória", 0.0)
+        valor_esperado_perda = (
+            valor_a_prazo_atual * resumo_ina["media_ponderada_pct"] / 100
+            if resumo_ina["media_ponderada_pct"] is not None else None
+        )
+
+        linhas_resumo_inadimp.append({
+            "nome": row.nome,
+            "loja": row.loja,
+            "media_historica_pct": resumo_ina["media_ponderada_pct"],
+            "n_meses": resumo_ina["n_meses"],
+            "slope": slope_ina,
+            "nivel_risco": resumo_ina["nivel_risco"],
+            "valor_a_prazo_atual": valor_a_prazo_atual,
+            "valor_esperado_perda": valor_esperado_perda,
+        })
+
+    resumo_inadimp_df = pd.DataFrame(linhas_resumo_inadimp)
+    if resumo_inadimp_df.empty:
+        st.info("Sem vendedores no filtro selecionado.")
+    else:
+        ordem_risco_ina = {"🔴 Alto": 0, "🟡 Moderado": 1, "🟢 Baixo": 2, "— sem dado": 3}
+        resumo_inadimp_df["_ordem"] = resumo_inadimp_df["nivel_risco"].map(ordem_risco_ina).fillna(3)
+        resumo_inadimp_df = resumo_inadimp_df.sort_values("_ordem")
+
+        resumo_fmt_ina = resumo_inadimp_df.copy()
+        resumo_fmt_ina["Média Histórica (%)"] = resumo_fmt_ina["media_historica_pct"].apply(
+            lambda v: f"{v:.1f}%" if v is not None else "—"
+        )
+        resumo_fmt_ina["Meses com Dado"] = resumo_fmt_ina["n_meses"]
+        resumo_fmt_ina["Tendência"] = resumo_fmt_ina["slope"].apply(
+            lambda v: (
+                f"{'+' if v >= 0 else ''}{v:.2f} pp/mês "
+                + ("📈 piorando" if v > 0.5 else ("📉 melhorando" if v < -0.5 else "➡️ estável"))
+            ) if v is not None else "—"
+        )
+        resumo_fmt_ina["Valor a Prazo (mês atual)"] = resumo_fmt_ina["valor_a_prazo_atual"].apply(db.formatar_moeda)
+        resumo_fmt_ina["Valor Esperado em Risco"] = resumo_fmt_ina["valor_esperado_perda"].apply(
+            lambda v: db.formatar_moeda(v) if v is not None else "—"
+        )
+        st.dataframe(
+            resumo_fmt_ina[
+                ["nome", "loja", "Média Histórica (%)", "Meses com Dado", "Tendência",
+                 "nivel_risco", "Valor a Prazo (mês atual)", "Valor Esperado em Risco"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Média Histórica (%) = soma de todo o valor em aberto já lançado ÷ soma de todo "
+            "o valor vendido a prazo (ponderada por R$ — mais justa que a média simples dos "
+            "meses). Tendência = inclinação da regressão linear do índice mensal ao longo do "
+            "tempo (precisa de pelo menos 3 meses com dado). Valor Esperado em Risco = valor "
+            "vendido a prazo no mês do filtro atual × a média histórica de inadimplência do "
+            "próprio vendedor — é a correção do risco de Nota Promissória com base no "
+            "comportamento real de pagamento de cada um, não só na exposição bruta."
         )
 
     st.markdown("---")
