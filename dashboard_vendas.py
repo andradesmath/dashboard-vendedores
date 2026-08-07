@@ -76,6 +76,8 @@ import calendar
 import re
 from datetime import date
 
+import numpy as np
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -1209,6 +1211,8 @@ with tab_dashboard:
         "como total mensal."
     )
 
+    avancado_df = pd.DataFrame(columns=["vendedor_id", "cv", "gap_ticket_pct"])
+
     if vendas_df.empty or dias_transcorridos == 0:
         st.info("Sem lançamentos diários suficientes no período para calcular estes indicadores.")
     else:
@@ -1230,6 +1234,8 @@ with tab_dashboard:
             dias_sem_lancamento = max(dias_transcorridos - dias_com_lancamento, 0)
 
             desvio_padrao = float(dados_vend["valor_realizado"].std(ddof=0)) if len(dados_vend) > 1 else 0.0
+            media_diaria = float(dados_vend["valor_realizado"].mean()) if len(dados_vend) > 1 else 0.0
+            cv = (desvio_padrao / media_diaria * 100) if media_diaria > 0 and len(dados_vend) > 1 else None
 
             meta_diaria_ind = float(meta_diaria_map.get(row.vendedor_id, 0.0))
             dias_bateram_meta = (
@@ -1248,22 +1254,37 @@ with tab_dashboard:
 
             ticket_medio_loja = float(ticket_medio_loja_map.get(row.loja, 0.0))
             gap_ticket = row.ticket_medio - ticket_medio_loja
+            gap_ticket_pct = (gap_ticket / ticket_medio_loja * 100) if ticket_medio_loja > 0 else None
 
             linhas_avancado.append({
+                "vendedor_id": row.vendedor_id,
                 "nome": row.nome,
                 "loja": row.loja,
                 "dias_sem_lancamento": dias_sem_lancamento,
                 "desvio_padrao": desvio_padrao,
+                "cv": cv,
                 "pct_dias_meta": pct_dias_meta,
                 "melhor_dia_data": melhor_dia_data,
                 "melhor_dia_valor": melhor_dia_valor,
                 "gap_ticket": gap_ticket,
+                "gap_ticket_pct": gap_ticket_pct,
             })
+
+        def _fmt_cv(v):
+            if v is None or pd.isna(v):
+                return "—"
+            if v <= 30:
+                rotulo = "Alta regularidade"
+            elif v <= 60:
+                rotulo = "Regularidade média"
+            else:
+                rotulo = "Baixa regularidade"
+            return f"{v:.1f}% ({rotulo})"
 
         avancado_df = pd.DataFrame(linhas_avancado)
         avancado_fmt = avancado_df.copy()
         avancado_fmt["Dias sem Lançamento"] = avancado_fmt["dias_sem_lancamento"]
-        avancado_fmt["Desvio Padrão Diário"] = avancado_fmt["desvio_padrao"].apply(db.formatar_moeda)
+        avancado_fmt["CV (Regularidade)"] = avancado_fmt["cv"].apply(_fmt_cv)
         avancado_fmt["% Dias com Meta Batida"] = avancado_fmt["pct_dias_meta"].apply(lambda v: f"{v:.1f}%")
         avancado_fmt["Melhor Dia"] = avancado_fmt.apply(
             lambda r: (
@@ -1277,7 +1298,7 @@ with tab_dashboard:
         )
         st.dataframe(
             avancado_fmt[
-                ["nome", "loja", "Dias sem Lançamento", "Desvio Padrão Diário",
+                ["nome", "loja", "Dias sem Lançamento", "CV (Regularidade)",
                  "% Dias com Meta Batida", "Melhor Dia", "Ticket vs. Média da Loja"]
             ].rename(columns={"nome": "Nome", "loja": "Loja"}),
             use_container_width=True,
@@ -1285,9 +1306,12 @@ with tab_dashboard:
         )
         st.caption(
             "Dias sem lançamento: dias úteis transcorridos sem nenhum registro de venda para o "
-            "vendedor. Desvio padrão alto = dias muito irregulares. % Dias com Meta Batida compara "
-            "o realizado de cada dia com a meta diária proporcional do vendedor (meta ÷ dias úteis "
-            "do mês). Ticket vs. Média da Loja: positivo (verde) = ticket acima da média da loja."
+            "vendedor. CV (Coeficiente de Variação) = desvio padrão ÷ média do realizado diário — "
+            "mede regularidade independente do volume vendido, por isso compara de forma justa "
+            "vendedores de portes diferentes (quanto menor, mais regular). % Dias com Meta Batida "
+            "compara o realizado de cada dia com a meta diária proporcional do vendedor (meta ÷ "
+            "dias úteis do mês). Ticket vs. Média da Loja: positivo (verde) = ticket acima da "
+            "média da loja."
         )
 
     st.markdown("---")
@@ -1358,29 +1382,124 @@ with tab_dashboard:
         ind_m2, on="vendedor_id", how="left"
     ).fillna(0.0)
 
-    def classificar_tendencia(row):
-        if row["atual"] < row["m1"] < row["m2"]:
-            return "📉 Queda"
-        if row["atual"] > row["m1"] > row["m2"]:
+    def calcular_slope(row):
+        xs = np.array([0.0, 1.0, 2.0])
+        ys = np.array([row["m2"], row["m1"], row["atual"]])
+        return float(np.polyfit(xs, ys, 1)[0])
+
+    def rotular_slope(slope):
+        if slope > 2:
             return "📈 Alta"
+        if slope < -2:
+            return "📉 Queda"
         return "➡️ Estável"
 
-    tendencia_df["Tendência"] = tendencia_df.apply(classificar_tendencia, axis=1)
+    tendencia_df["slope"] = tendencia_df.apply(calcular_slope, axis=1)
+    tendencia_df["Tendência"] = tendencia_df["slope"].apply(rotular_slope)
     tendencia_fmt = tendencia_df.copy()
     tendencia_fmt[f"{db.MESES_PT[mes_m2]}/{ano_m2}"] = tendencia_fmt["m2"].apply(lambda v: f"{v:.1f}%")
     tendencia_fmt[f"{db.MESES_PT[mes_m1]}/{ano_m1}"] = tendencia_fmt["m1"].apply(lambda v: f"{v:.1f}%")
     tendencia_fmt[f"{db.MESES_PT[mes_filtro]}/{ano_filtro} (atual)"] = tendencia_fmt["atual"].apply(
         lambda v: f"{v:.1f}%"
     )
+    tendencia_fmt["Inclinação (pp/mês)"] = tendencia_fmt["slope"].apply(
+        lambda v: f"{'+' if v >= 0 else ''}{v:.1f} pp/mês"
+    )
     st.dataframe(
         tendencia_fmt[
             ["nome", "loja", f"{db.MESES_PT[mes_m2]}/{ano_m2}", f"{db.MESES_PT[mes_m1]}/{ano_m1}",
-             f"{db.MESES_PT[mes_filtro]}/{ano_filtro} (atual)", "Tendência"]
+             f"{db.MESES_PT[mes_filtro]}/{ano_filtro} (atual)", "Inclinação (pp/mês)", "Tendência"]
         ].rename(columns={"nome": "Nome", "loja": "Loja"}),
         use_container_width=True,
         hide_index=True,
     )
-    st.caption("Atingimento (%) = realizado ÷ meta do mês. Queda/Alta exige 3 meses seguidos na mesma direção.")
+    st.caption(
+        "Atingimento (%) = realizado ÷ meta do mês. Tendência calculada por regressão linear "
+        "simples sobre os 3 meses (inclinação em pontos percentuais de atingimento por mês, via "
+        "numpy.polyfit) — Alta/Queda exige inclinação acima de ±2 pp/mês; entre isso, considera-se "
+        "Estável. Mais sensível que exigir 3 meses seguidos estritamente na mesma direção."
+    )
+
+    st.markdown("---")
+
+    # ---- Score Composto de Performance (0-100) ----
+    st.markdown("### 🏅 Score de Performance (0–100)")
+    st.caption(
+        "Índice único por vendedor: 50% Atingimento da meta, 20% Consistência (regularidade das "
+        "vendas diárias, via CV), 15% Tendência (inclinação dos últimos 3 meses) e 15% Ticket "
+        "médio vs. média da loja. Quando faltam dados diários para calcular consistência ou "
+        "tendência, esse componente recebe nota neutra (50 pontos) em vez de penalizar o vendedor."
+    )
+
+    if indicadores_atual.empty:
+        st.info("Sem vendedores no filtro selecionado para calcular o score.")
+    else:
+        score_df = indicadores_atual[["vendedor_id", "nome", "loja", "atingimento_pct"]].copy()
+        score_df = score_df.merge(
+            avancado_df[["vendedor_id", "cv", "gap_ticket_pct"]], on="vendedor_id", how="left",
+        )
+        score_df = score_df.merge(
+            tendencia_df[["vendedor_id", "slope"]], on="vendedor_id", how="left"
+        )
+
+        def _score_atingimento(pct):
+            return max(0.0, min(float(pct), 150.0)) / 150.0 * 100.0
+
+        def _score_consistencia(cv):
+            if cv is None or pd.isna(cv):
+                return 50.0
+            return max(0.0, min(100.0 - float(cv), 100.0))
+
+        def _score_tendencia(slope):
+            if slope is None or pd.isna(slope):
+                return 50.0
+            return max(0.0, min(50.0 + float(slope) * 5.0, 100.0))
+
+        def _score_ticket(gap_pct):
+            if gap_pct is None or pd.isna(gap_pct):
+                return 50.0
+            return max(0.0, min(50.0 + float(gap_pct), 100.0))
+
+        score_df["score_atingimento"] = score_df["atingimento_pct"].apply(_score_atingimento)
+        score_df["score_consistencia"] = score_df["cv"].apply(_score_consistencia)
+        score_df["score_tendencia"] = score_df["slope"].apply(_score_tendencia)
+        score_df["score_ticket"] = score_df["gap_ticket_pct"].apply(_score_ticket)
+        score_df["score_final"] = (
+            score_df["score_atingimento"] * 0.50
+            + score_df["score_consistencia"] * 0.20
+            + score_df["score_tendencia"] * 0.15
+            + score_df["score_ticket"] * 0.15
+        )
+        score_df = score_df.sort_values("score_final", ascending=False).reset_index(drop=True)
+
+        medalhas = {0: "🥇", 1: "🥈", 2: "🥉"}
+        score_fmt = score_df.copy()
+        score_fmt["#"] = score_fmt.index.map(lambda i: medalhas.get(i, str(i + 1)))
+        score_fmt["Score"] = score_fmt["score_final"].apply(lambda v: f"{v:.1f}")
+        score_fmt["Atingimento"] = score_fmt["score_atingimento"].apply(lambda v: f"{v:.0f}")
+        score_fmt["Consistência"] = score_fmt["score_consistencia"].apply(lambda v: f"{v:.0f}")
+        score_fmt["Tendência"] = score_fmt["score_tendencia"].apply(lambda v: f"{v:.0f}")
+        score_fmt["Ticket"] = score_fmt["score_ticket"].apply(lambda v: f"{v:.0f}")
+
+        st.dataframe(
+            score_fmt[
+                ["#", "nome", "loja", "Score", "Atingimento", "Consistência", "Tendência", "Ticket"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        fig_score = go.Figure(go.Bar(
+            x=score_df["score_final"], y=score_df["nome"], orientation="h",
+            marker_color=AZUL, text=score_df["score_final"].apply(lambda v: f"{v:.1f}"),
+            textposition="outside",
+        ))
+        fig_score.update_layout(
+            xaxis=dict(title="Score (0-100)", range=[0, 108]),
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=10, r=10, t=20, b=10), height=max(280, 32 * len(score_df)),
+        )
+        st.plotly_chart(fig_score, use_container_width=True)
 
     st.markdown("---")
 
