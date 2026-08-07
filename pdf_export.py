@@ -29,7 +29,8 @@ VERDE = colors.HexColor("#1e8449")
 CINZA = colors.HexColor("#555555")
 
 
-def _calcular_kpis_vendedor(vendedor_id, ano, mes):
+def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
+    dias_uteis_total = dias_uteis_total or db.DIAS_UTEIS_PADRAO
     meta = db.get_meta_vendedor(vendedor_id, ano, mes)
     vendas = db.get_vendas_vendedor_mes(vendedor_id, ano, mes)
     realizado = float(vendas["valor_realizado"].sum()) if not vendas.empty else 0.0
@@ -38,6 +39,15 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes):
     pedidos += db.get_pedidos_manual_vendedor(vendedor_id, ano, mes)
     atingimento = (realizado / meta * 100) if meta > 0 else 0.0
     ticket = (realizado / pedidos) if pedidos > 0 else 0.0
+
+    # Meta diária = meta do mês ÷ dias úteis do mês; média diária realizada considera
+    # apenas os lançamentos diários (não inclui realizado importado como total mensal,
+    # que não tem granularidade de dia).
+    meta_diaria = (meta / dias_uteis_total) if dias_uteis_total > 0 else 0.0
+    media_diaria_realizada = float(vendas["valor_realizado"].mean()) if not vendas.empty else 0.0
+    atingimento_diario = (media_diaria_realizada / meta_diaria * 100) if meta_diaria > 0 else 0.0
+    variacao_diaria_pct = atingimento_diario - 100.0
+
     return {
         "meta": meta,
         "realizado": realizado,
@@ -45,6 +55,10 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes):
         "atingimento": atingimento,
         "ticket": ticket,
         "vendas": vendas,
+        "meta_diaria": meta_diaria,
+        "media_diaria_realizada": media_diaria_realizada,
+        "atingimento_diario": atingimento_diario,
+        "variacao_diaria_pct": variacao_diaria_pct,
     }
 
 
@@ -71,7 +85,7 @@ def _grafico_vendas_diarias(vendas_df):
 def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None):
     """Gera o PDF de indicadores de um único vendedor e retorna os bytes do arquivo."""
     dias_uteis_total = dias_uteis_total or db.DIAS_UTEIS_PADRAO
-    kpis = _calcular_kpis_vendedor(vendedor_id, ano, mes)
+    kpis = _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total)
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -91,11 +105,18 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
     elementos.append(HRFlowable(width="100%", color=AZUL, thickness=1.2))
     elementos.append(Spacer(1, 0.5 * cm))
 
+    variacao = kpis["variacao_diaria_pct"]
+    variacao_txt = f"{'+' if variacao >= 0 else ''}{variacao:.1f}% ({'acima' if variacao >= 0 else 'abaixo'} da meta diária)"
+
     dados_tabela = [
         ["Indicador", "Valor"],
-        ["Meta do mês", db.formatar_moeda(kpis["meta"])],
+        ["Meta do mês (global)", db.formatar_moeda(kpis["meta"])],
         ["Realizado do mês", db.formatar_moeda(kpis["realizado"])],
-        ["Atingimento (%)", f"{kpis['atingimento']:.1f}%  ({db.label_semaforo(kpis['atingimento'])})"],
+        ["Atingimento da meta global (%)", f"{kpis['atingimento']:.1f}%  ({db.label_semaforo(kpis['atingimento'])})"],
+        ["Meta diária (meta ÷ dias úteis)", db.formatar_moeda(kpis["meta_diaria"])],
+        ["Média diária realizada", db.formatar_moeda(kpis["media_diaria_realizada"])],
+        ["Atingimento da meta diária (%)", f"{kpis['atingimento_diario']:.1f}%"],
+        ["Variação vs. meta diária", variacao_txt],
         ["Pedidos", str(kpis["pedidos"])],
         ["Ticket médio individual", db.formatar_moeda(kpis["ticket"])],
     ]
