@@ -175,6 +175,16 @@ def init_db():
             UNIQUE (vendedor_id, ano, mes)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS inadimplencia_mensal (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            ano_venda INTEGER NOT NULL,
+            mes_venda INTEGER NOT NULL,
+            valor_em_aberto NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            UNIQUE (vendedor_id, ano_venda, mes_venda)
+        )
+        """,
     ]
     with get_engine().begin() as conn:
         for stmt in migracoes_pre:
@@ -837,6 +847,145 @@ def get_risco_nota_promissoria_mes(ano, mes, loja=None):
             "nivel_risco": nivel_risco_nota_promissoria(pct_np_mes),
         })
     return pd.DataFrame(linhas)
+
+
+# --------------------------------------------------------------------------
+# Inadimplência - valores em aberto das vendas a prazo (Nota Promissória).
+# O risco de um mês só se confirma (ou não) nos meses seguintes: o valor vendido
+# a prazo em fevereiro deveria ser recebido a partir de março; o que não for pago
+# a partir de 30 dias entra aqui como "valor em aberto" daquele mês de VENDA
+# (ano_venda/mes_venda), não do mês em que a cobrança foi apurada. Cruzando com o
+# valor vendido em Nota Promissória (já rastreado no mix de pagamento) chegamos
+# ao índice de inadimplência (%) = valor em aberto ÷ valor vendido a prazo.
+# --------------------------------------------------------------------------
+INADIMPLENCIA_LIMIAR_BAIXO = 3.0
+INADIMPLENCIA_LIMIAR_MODERADO = 8.0
+
+
+def nivel_risco_inadimplencia(pct):
+    """Classifica o índice de inadimplência (%) em Baixo/Moderado/Alto risco."""
+    if pct is None:
+        return "— sem dado"
+    if pct < INADIMPLENCIA_LIMIAR_BAIXO:
+        return "🟢 Baixo"
+    elif pct <= INADIMPLENCIA_LIMIAR_MODERADO:
+        return "🟡 Moderado"
+    return "🔴 Alto"
+
+
+def upsert_inadimplencia(vendedor_id, ano_venda, mes_venda, valor_em_aberto):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO inadimplencia_mensal (vendedor_id, ano_venda, mes_venda, valor_em_aberto)
+                VALUES (:vendedor_id, :ano_venda, :mes_venda, :valor_em_aberto)
+                ON CONFLICT (vendedor_id, ano_venda, mes_venda)
+                DO UPDATE SET valor_em_aberto = EXCLUDED.valor_em_aberto
+                """
+            ),
+            {
+                "vendedor_id": vendedor_id, "ano_venda": ano_venda, "mes_venda": mes_venda,
+                "valor_em_aberto": valor_em_aberto,
+            },
+        )
+
+
+def get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda):
+    """Retorna o valor em aberto já lançado para o vendedor/mês de venda, ou None
+    se ainda não houver lançamento (diferente de 0, que significa 'sem pendência')."""
+    df = pd.read_sql_query(
+        text(
+            "SELECT valor_em_aberto FROM inadimplencia_mensal "
+            "WHERE vendedor_id=:vid AND ano_venda=:ano AND mes_venda=:mes"
+        ),
+        get_engine(),
+        params={"vid": vendedor_id, "ano": ano_venda, "mes": mes_venda},
+    )
+    return float(df.iloc[0]["valor_em_aberto"]) if not df.empty else None
+
+
+def get_inadimplencia_mes(ano_venda, mes_venda, loja=None):
+    """Por vendedor ativo do filtro: valor vendido a prazo (Nota Promissória) no mês
+    de venda informado, valor em aberto lançado e o índice de inadimplência (%)."""
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    linhas = []
+    for _, v in vendedores_df.iterrows():
+        vendedor_id = int(v["id"])
+        valor_aberto = get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda)
+        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, ano_venda, mes_venda)
+        valor_a_prazo = valores_mes.get("Nota Promissória", 0.0)
+        indice_pct = (
+            (valor_aberto / valor_a_prazo * 100)
+            if (valor_aberto is not None and valor_a_prazo > 0) else None
+        )
+        linhas.append({
+            "vendedor_id": vendedor_id,
+            "nome": v["nome"],
+            "loja": v["loja"],
+            "valor_a_prazo": valor_a_prazo,
+            "valor_em_aberto": valor_aberto,
+            "indice_pct": indice_pct,
+            "nivel_risco": nivel_risco_inadimplencia(indice_pct),
+        })
+    return pd.DataFrame(linhas)
+
+
+def get_inadimplencia_historico_vendedor(vendedor_id):
+    """Série histórica (uma linha por mês de venda com valor em aberto lançado) do
+    vendedor: valor vendido a prazo, valor em aberto e o índice de inadimplência (%)
+    de cada mês, ordenada cronologicamente — base para calcular tendência."""
+    df = pd.read_sql_query(
+        text(
+            "SELECT ano_venda, mes_venda, valor_em_aberto FROM inadimplencia_mensal "
+            "WHERE vendedor_id=:vid ORDER BY ano_venda, mes_venda"
+        ),
+        get_engine(),
+        params={"vid": vendedor_id},
+    )
+    if df.empty:
+        return pd.DataFrame(columns=["ano_venda", "mes_venda", "valor_a_prazo", "valor_em_aberto", "indice_pct"])
+
+    linhas = []
+    for _, r in df.iterrows():
+        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, int(r["ano_venda"]), int(r["mes_venda"]))
+        valor_a_prazo = valores_mes.get("Nota Promissória", 0.0)
+        valor_em_aberto = float(r["valor_em_aberto"])
+        indice_pct = (valor_em_aberto / valor_a_prazo * 100) if valor_a_prazo > 0 else None
+        linhas.append({
+            "ano_venda": int(r["ano_venda"]),
+            "mes_venda": int(r["mes_venda"]),
+            "valor_a_prazo": valor_a_prazo,
+            "valor_em_aberto": valor_em_aberto,
+            "indice_pct": indice_pct,
+        })
+    return pd.DataFrame(linhas)
+
+
+def get_indice_inadimplencia_resumo_vendedor(vendedor_id):
+    """Resumo do índice de inadimplência histórico do vendedor: média ponderada por
+    R$ (soma valor em aberto ÷ soma valor a prazo de todos os meses com dado válido —
+    mais justo que a média simples dos percentuais mensais, que trataria um mês
+    pequeno com o mesmo peso de um mês grande), quantidade de meses considerados e
+    o nível de risco resultante."""
+    hist = get_inadimplencia_historico_vendedor(vendedor_id)
+    hist_valida = hist[hist["valor_a_prazo"] > 0] if not hist.empty else hist
+    if hist_valida.empty:
+        return {
+            "media_ponderada_pct": None,
+            "n_meses": 0,
+            "nivel_risco": nivel_risco_inadimplencia(None),
+            "historico": hist,
+        }
+    total_prazo = float(hist_valida["valor_a_prazo"].sum())
+    total_aberto = float(hist_valida["valor_em_aberto"].sum())
+    media_pct = (total_aberto / total_prazo * 100) if total_prazo > 0 else None
+    return {
+        "media_ponderada_pct": media_pct,
+        "n_meses": int(len(hist_valida)),
+        "nivel_risco": nivel_risco_inadimplencia(media_pct),
+        "historico": hist,
+    }
 
 
 # --------------------------------------------------------------------------
