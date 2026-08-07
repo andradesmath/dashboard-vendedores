@@ -747,6 +747,94 @@ def get_mix_pagamento_mes(ano, mes, loja=None):
     return mix_df, realizado_com_mix
 
 
+def _somar_valores_por_modalidade(dia_df, manual_df):
+    """Soma o valor em R$ por modalidade (diário + manual) num dict {modalidade: valor}."""
+    valores = {m: 0.0 for m in MODALIDADES_PAGAMENTO}
+    for origem_df in (dia_df, manual_df):
+        if origem_df is None or origem_df.empty:
+            continue
+        for _, r in origem_df.iterrows():
+            for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+                valores[modalidade] += float(r["valor_realizado"]) * float(r[coluna]) / 100.0
+    return valores
+
+
+def get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes):
+    """Mix de pagamento (R$ por modalidade) de um vendedor num mês específico,
+    combinando lançamento diário + manual. Retorna (valores_dict, total_com_mix)."""
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    colunas = list(COLUNAS_PAGAMENTO.values())
+
+    dia_df = pd.read_sql_query(
+        text(
+            f"""
+            SELECT vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
+            FROM pagamentos_diarios pg
+            JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
+            WHERE pg.vendedor_id = :vid AND pg.data BETWEEN :ini AND :fim
+            """
+        ),
+        get_engine(),
+        params={"vid": vendedor_id, "ini": ini, "fim": fim},
+    )
+    manual_df = pd.read_sql_query(
+        text(
+            f"""
+            SELECT rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
+            FROM pagamentos_mensal_manual pm
+            JOIN realizado_mensal_manual rm
+              ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
+            WHERE pm.vendedor_id = :vid AND pm.ano = :ano AND pm.mes = :mes
+            """
+        ),
+        get_engine(),
+        params={"vid": vendedor_id, "ano": ano, "mes": mes},
+    )
+
+    valores = _somar_valores_por_modalidade(dia_df, manual_df)
+    total = sum(valores.values())
+    return valores, total
+
+
+def get_mix_pagamento_historico_vendedor(vendedor_id):
+    """Média histórica ponderada por modalidade (todo o histórico já lançado,
+    diário + manual) de um vendedor. Retorna (medias_pct_dict, total_com_mix)."""
+    colunas = list(COLUNAS_PAGAMENTO.values())
+
+    dia_df = pd.read_sql_query(
+        text(
+            f"""
+            SELECT vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
+            FROM pagamentos_diarios pg
+            JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
+            WHERE pg.vendedor_id = :vid
+            """
+        ),
+        get_engine(),
+        params={"vid": vendedor_id},
+    )
+    manual_df = pd.read_sql_query(
+        text(
+            f"""
+            SELECT rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
+            FROM pagamentos_mensal_manual pm
+            JOIN realizado_mensal_manual rm
+              ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
+            WHERE pm.vendedor_id = :vid
+            """
+        ),
+        get_engine(),
+        params={"vid": vendedor_id},
+    )
+
+    valores = _somar_valores_por_modalidade(dia_df, manual_df)
+    total = sum(valores.values())
+    medias_pct = {m: (v / total * 100 if total > 0 else 0.0) for m, v in valores.items()}
+    return medias_pct, total
+
+
 # --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------

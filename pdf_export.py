@@ -48,6 +48,21 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
     atingimento_diario = (media_diaria_realizada / meta_diaria * 100) if meta_diaria > 0 else 0.0
     variacao_diaria_pct = atingimento_diario - 100.0
 
+    # Mix de pagamento: % do mês atual, valor realizado por modalidade no mês e média
+    # histórica ponderada (todo o histórico já lançado) por modalidade.
+    mix_mes_valores, mix_mes_total = db.get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes)
+    mix_hist_pct, mix_hist_total = db.get_mix_pagamento_historico_vendedor(vendedor_id)
+    mix_pagamento = []
+    for modalidade in db.MODALIDADES_PAGAMENTO:
+        valor_mes = mix_mes_valores.get(modalidade, 0.0)
+        pct_mes = (valor_mes / mix_mes_total * 100) if mix_mes_total > 0 else 0.0
+        mix_pagamento.append({
+            "modalidade": modalidade,
+            "pct_mes": pct_mes,
+            "valor_mes": valor_mes,
+            "media_historica_pct": mix_hist_pct.get(modalidade, 0.0),
+        })
+
     return {
         "meta": meta,
         "realizado": realizado,
@@ -59,6 +74,9 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
         "media_diaria_realizada": media_diaria_realizada,
         "atingimento_diario": atingimento_diario,
         "variacao_diaria_pct": variacao_diaria_pct,
+        "mix_pagamento": mix_pagamento,
+        "mix_mes_total": mix_mes_total,
+        "mix_hist_total": mix_hist_total,
     }
 
 
@@ -133,6 +151,45 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
     ]))
     elementos.append(tabela)
+
+    if kpis["mix_mes_total"] > 0 or kpis["mix_hist_total"] > 0:
+        elementos.append(Paragraph("Mix de pagamento", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        dados_mix = [["Tipo de Pagamento", "% do Mês", "Média Histórica (%)", "Realizado no Mês"]]
+        for linha in kpis["mix_pagamento"]:
+            dados_mix.append([
+                linha["modalidade"],
+                f"{linha['pct_mes']:.1f}%" if kpis["mix_mes_total"] > 0 else "—",
+                f"{linha['media_historica_pct']:.1f}%" if kpis["mix_hist_total"] > 0 else "—",
+                db.formatar_moeda(linha["valor_mes"]) if kpis["mix_mes_total"] > 0 else "—",
+            ])
+        tabela_mix = Table(dados_mix, colWidths=[5 * cm, 3.5 * cm, 4 * cm, 3.5 * cm])
+        tabela_mix.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]))
+        elementos.append(tabela_mix)
+        if kpis["mix_mes_total"] == 0:
+            elementos.append(Spacer(1, 0.15 * cm))
+            elementos.append(Paragraph(
+                "Nenhum mix de pagamento lançado neste mês — mostrando só a média histórica.",
+                sub_style,
+            ))
+        elif kpis["mix_hist_total"] == 0:
+            elementos.append(Spacer(1, 0.15 * cm))
+            elementos.append(Paragraph(
+                "Ainda sem histórico suficiente para calcular a média histórica.",
+                sub_style,
+            ))
+        elementos.append(Spacer(1, 0.3 * cm))
 
     vendas = kpis["vendas"]
     if not vendas.empty:
