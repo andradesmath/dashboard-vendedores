@@ -36,7 +36,7 @@ MESES_PT = {
 }
 
 MODALIDADES_PAGAMENTO = [
-    "Crédito", "Débito", "Dinheiro", "Pix", "Boleto", "Nota Promissória", "Voucher",
+    "Crédito", "Débito", "Dinheiro", "Pix", "Boleto", "Nota Promissória", "Voucher", "Depósito",
 ]
 COLUNAS_PAGAMENTO = {
     "Crédito": "pct_credito",
@@ -46,6 +46,7 @@ COLUNAS_PAGAMENTO = {
     "Boleto": "pct_boleto",
     "Nota Promissória": "pct_nota_promissoria",
     "Voucher": "pct_voucher",
+    "Depósito": "pct_deposito",
 }
 
 
@@ -153,6 +154,7 @@ def init_db():
             pct_boleto NUMERIC(5, 2) NOT NULL DEFAULT 0,
             pct_nota_promissoria NUMERIC(5, 2) NOT NULL DEFAULT 0,
             pct_voucher NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_deposito NUMERIC(5, 2) NOT NULL DEFAULT 0,
             UNIQUE (vendedor_id, data)
         )
         """,
@@ -169,6 +171,7 @@ def init_db():
             pct_boleto NUMERIC(5, 2) NOT NULL DEFAULT 0,
             pct_nota_promissoria NUMERIC(5, 2) NOT NULL DEFAULT 0,
             pct_voucher NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_deposito NUMERIC(5, 2) NOT NULL DEFAULT 0,
             UNIQUE (vendedor_id, ano, mes)
         )
         """,
@@ -180,6 +183,13 @@ def init_db():
             conn.execute(text(stmt))
         # Migração: remove a coluna email de bancos criados com a versão anterior do schema.
         conn.execute(text("ALTER TABLE vendedores DROP COLUMN IF EXISTS email"))
+        # Migração: adiciona a modalidade "Depósito" em bancos criados antes dela existir.
+        conn.execute(text(
+            "ALTER TABLE pagamentos_diarios ADD COLUMN IF NOT EXISTS pct_deposito NUMERIC(5, 2) NOT NULL DEFAULT 0"
+        ))
+        conn.execute(text(
+            "ALTER TABLE pagamentos_mensal_manual ADD COLUMN IF NOT EXISTS pct_deposito NUMERIC(5, 2) NOT NULL DEFAULT 0"
+        ))
         # Migração: renomeia qtd_clientes -> qtd_pedidos nas tabelas que ainda tiverem
         # a coluna com o nome antigo (bancos criados antes da renomeação para "pedidos").
         conn.execute(text(
@@ -629,31 +639,6 @@ def get_pagamento_dia_vendedor(vendedor_id, data_venda):
     return {modalidade: float(row[coluna]) for modalidade, coluna in COLUNAS_PAGAMENTO.items()}
 
 
-def get_pagamentos_dia_mes(ano, mes, loja=None):
-    """Mix diário do mês, já cruzado com o valor_realizado do dia (só dias com mix lançado)."""
-    ini = date(ano, mes, 1)
-    ultimo_dia = calendar.monthrange(ano, mes)[1]
-    fim = date(ano, mes, ultimo_dia)
-    colunas = list(COLUNAS_PAGAMENTO.values())
-    query = f"""
-        SELECT v.id AS vendedor_id, v.nome, v.loja, vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
-        FROM pagamentos_diarios pg
-        JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
-        JOIN vendedores v ON v.id = pg.vendedor_id
-        WHERE pg.data BETWEEN :ini AND :fim
-    """
-    params = {"ini": ini, "fim": fim}
-    if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
-        params["loja"] = loja
-    df = pd.read_sql_query(text(query), get_engine(), params=params)
-    if not df.empty:
-        df["valor_realizado"] = df["valor_realizado"].astype(float)
-        for c in colunas:
-            df[c] = df[c].astype(float)
-    return df
-
-
 def upsert_pagamento_mensal(vendedor_id, ano, mes, percentuais):
     """percentuais: dict {modalidade (label de MODALIDADES_PAGAMENTO): valor percentual}."""
     colunas = list(COLUNAS_PAGAMENTO.values())
@@ -691,148 +676,122 @@ def get_pagamento_manual_vendedor(vendedor_id, ano, mes):
     return {modalidade: float(row[coluna]) for modalidade, coluna in COLUNAS_PAGAMENTO.items()}
 
 
-def get_pagamentos_manual_mes(ano, mes, loja=None):
-    """Mix mensal manual, já cruzado com o valor_realizado manual do mês (só quem tiver os dois lançados)."""
+def _mix_diario_vendedor_periodo(vendedor_id, ini=None, fim=None):
+    """Soma, por modalidade, o valor em R$ coberto por lançamentos DIÁRIOS de mix no
+    período (ou em todo o histórico, se ini/fim não informados). Retorna (valores_dict,
+    total_coberto)."""
     colunas = list(COLUNAS_PAGAMENTO.values())
     query = f"""
-        SELECT v.id AS vendedor_id, v.nome, v.loja, rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
-        FROM pagamentos_mensal_manual pm
-        JOIN realizado_mensal_manual rm
-          ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
-        JOIN vendedores v ON v.id = pm.vendedor_id
-        WHERE pm.ano = :ano AND pm.mes = :mes
+        SELECT vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
+        FROM pagamentos_diarios pg
+        JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
+        WHERE pg.vendedor_id = :vid
     """
-    params = {"ano": ano, "mes": mes}
-    if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
-        params["loja"] = loja
-    df = pd.read_sql_query(text(query), get_engine(), params=params)
-    if not df.empty:
-        df["valor_realizado"] = df["valor_realizado"].astype(float)
-        for c in colunas:
-            df[c] = df[c].astype(float)
-    return df
+    params = {"vid": vendedor_id}
+    if ini is not None and fim is not None:
+        query += " AND pg.data BETWEEN :ini AND :fim"
+        params["ini"] = ini
+        params["fim"] = fim
+    dia_df = pd.read_sql_query(text(query), get_engine(), params=params)
 
-
-def get_mix_pagamento_mes(ano, mes, loja=None):
-    """Combina o mix diário + manual do mês num DataFrame "longo" (uma linha por
-    vendedor/modalidade, com o valor em R$ daquela modalidade), mais a soma do
-    realizado que teve mix informado (para calcular cobertura em relação ao
-    realizado total do mês)."""
-    dia_df = get_pagamentos_dia_mes(ano, mes, loja=loja)
-    manual_df = get_pagamentos_manual_mes(ano, mes, loja=loja)
-
-    linhas = []
-    for origem_df in (dia_df, manual_df):
-        if origem_df.empty:
-            continue
-        for _, r in origem_df.iterrows():
-            for modalidade, coluna in COLUNAS_PAGAMENTO.items():
-                valor_modalidade = float(r["valor_realizado"]) * float(r[coluna]) / 100.0
-                if valor_modalidade == 0.0 and float(r[coluna]) == 0.0:
-                    continue
-                linhas.append({
-                    "vendedor_id": r["vendedor_id"],
-                    "nome": r["nome"],
-                    "loja": r["loja"],
-                    "modalidade": modalidade,
-                    "valor": valor_modalidade,
-                })
-
-    mix_df = pd.DataFrame(linhas, columns=["vendedor_id", "nome", "loja", "modalidade", "valor"])
-    realizado_com_mix = (
-        (float(dia_df["valor_realizado"].sum()) if not dia_df.empty else 0.0)
-        + (float(manual_df["valor_realizado"].sum()) if not manual_df.empty else 0.0)
-    )
-    return mix_df, realizado_com_mix
-
-
-def _somar_valores_por_modalidade(dia_df, manual_df):
-    """Soma o valor em R$ por modalidade (diário + manual) num dict {modalidade: valor}."""
     valores = {m: 0.0 for m in MODALIDADES_PAGAMENTO}
-    for origem_df in (dia_df, manual_df):
-        if origem_df is None or origem_df.empty:
-            continue
-        for _, r in origem_df.iterrows():
+    if not dia_df.empty:
+        for _, r in dia_df.iterrows():
             for modalidade, coluna in COLUNAS_PAGAMENTO.items():
                 valores[modalidade] += float(r["valor_realizado"]) * float(r[coluna]) / 100.0
-    return valores
+    total_coberto = float(dia_df["valor_realizado"].sum()) if not dia_df.empty else 0.0
+    return valores, total_coberto
 
 
 def get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes):
-    """Mix de pagamento (R$ por modalidade) de um vendedor num mês específico,
-    combinando lançamento diário + manual. Retorna (valores_dict, total_com_mix)."""
+    """Mix de pagamento (R$ por modalidade) de um vendedor num mês específico.
+    Usa primeiro o mix DIÁRIO lançado no mês; para a parte do realizado do mês que
+    ainda não tem mix diário informado, aplica o mix MENSAL agregado (se houver) —
+    funciona tanto para meses com realizado vindo de lançamento diário quanto de
+    importação manual (histórico). Retorna (valores_dict, total_com_mix)."""
     ini = date(ano, mes, 1)
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim = date(ano, mes, ultimo_dia)
-    colunas = list(COLUNAS_PAGAMENTO.values())
 
-    dia_df = pd.read_sql_query(
+    valores, total_coberto_diario = _mix_diario_vendedor_periodo(vendedor_id, ini, fim)
+
+    vendas_vend = pd.read_sql_query(
         text(
-            f"""
-            SELECT vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
-            FROM pagamentos_diarios pg
-            JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
-            WHERE pg.vendedor_id = :vid AND pg.data BETWEEN :ini AND :fim
-            """
+            "SELECT COALESCE(SUM(valor_realizado), 0) AS total FROM vendas_diarias "
+            "WHERE vendedor_id=:vid AND data BETWEEN :ini AND :fim"
         ),
         get_engine(),
         params={"vid": vendedor_id, "ini": ini, "fim": fim},
     )
-    manual_df = pd.read_sql_query(
-        text(
-            f"""
-            SELECT rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
-            FROM pagamentos_mensal_manual pm
-            JOIN realizado_mensal_manual rm
-              ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
-            WHERE pm.vendedor_id = :vid AND pm.ano = :ano AND pm.mes = :mes
-            """
-        ),
-        get_engine(),
-        params={"vid": vendedor_id, "ano": ano, "mes": mes},
-    )
+    realizado_diario_total = float(vendas_vend.iloc[0]["total"])
+    realizado_manual_total = get_realizado_manual_vendedor(vendedor_id, ano, mes)
+    realizado_mes_total = realizado_diario_total + realizado_manual_total
 
-    valores = _somar_valores_por_modalidade(dia_df, manual_df)
-    total = sum(valores.values())
-    return valores, total
+    pct_mensal = get_pagamento_manual_vendedor(vendedor_id, ano, mes)
+    realizado_restante = max(realizado_mes_total - total_coberto_diario, 0.0)
+    total_coberto = total_coberto_diario
+    if pct_mensal and realizado_restante > 0:
+        for modalidade in MODALIDADES_PAGAMENTO:
+            valores[modalidade] += realizado_restante * pct_mensal.get(modalidade, 0.0) / 100.0
+        total_coberto += realizado_restante
+
+    return valores, total_coberto
 
 
 def get_mix_pagamento_historico_vendedor(vendedor_id):
-    """Média histórica ponderada por modalidade (todo o histórico já lançado,
-    diário + manual) de um vendedor. Retorna (medias_pct_dict, total_com_mix)."""
-    colunas = list(COLUNAS_PAGAMENTO.values())
-
-    dia_df = pd.read_sql_query(
+    """Média histórica ponderada por modalidade, somando todos os meses em que o
+    vendedor tem mix de pagamento lançado (diário e/ou mensal agregado). Retorna
+    (medias_pct_dict, total_com_mix)."""
+    meses_df = pd.read_sql_query(
         text(
-            f"""
-            SELECT vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
-            FROM pagamentos_diarios pg
-            JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
-            WHERE pg.vendedor_id = :vid
             """
-        ),
-        get_engine(),
-        params={"vid": vendedor_id},
-    )
-    manual_df = pd.read_sql_query(
-        text(
-            f"""
-            SELECT rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
-            FROM pagamentos_mensal_manual pm
-            JOIN realizado_mensal_manual rm
-              ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
-            WHERE pm.vendedor_id = :vid
+            SELECT DISTINCT ano, mes FROM (
+                SELECT EXTRACT(YEAR FROM data)::int AS ano, EXTRACT(MONTH FROM data)::int AS mes
+                FROM pagamentos_diarios WHERE vendedor_id = :vid
+                UNION
+                SELECT ano, mes FROM pagamentos_mensal_manual WHERE vendedor_id = :vid
+            ) t
             """
         ),
         get_engine(),
         params={"vid": vendedor_id},
     )
 
-    valores = _somar_valores_por_modalidade(dia_df, manual_df)
-    total = sum(valores.values())
-    medias_pct = {m: (v / total * 100 if total > 0 else 0.0) for m, v in valores.items()}
-    return medias_pct, total
+    valores_total = {m: 0.0 for m in MODALIDADES_PAGAMENTO}
+    for _, row in meses_df.iterrows():
+        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, int(row["ano"]), int(row["mes"]))
+        for modalidade in MODALIDADES_PAGAMENTO:
+            valores_total[modalidade] += valores_mes.get(modalidade, 0.0)
+
+    total_geral = sum(valores_total.values())
+    medias_pct = {m: (v / total_geral * 100 if total_geral > 0 else 0.0) for m, v in valores_total.items()}
+    return medias_pct, total_geral
+
+
+def get_mix_pagamento_mes(ano, mes, loja=None):
+    """Combina o mix diário + mensal agregado de TODOS os vendedores do filtro num
+    DataFrame "longo" (uma linha por vendedor/modalidade, com o valor em R$), mais a
+    soma do realizado que teve mix informado (cobertura em relação ao realizado
+    total do mês)."""
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    linhas = []
+    realizado_com_mix = 0.0
+    for _, v in vendedores_df.iterrows():
+        valores, total_coberto = get_mix_pagamento_vendedor_mes(int(v["id"]), ano, mes)
+        realizado_com_mix += total_coberto
+        for modalidade, valor in valores.items():
+            if valor == 0.0:
+                continue
+            linhas.append({
+                "vendedor_id": int(v["id"]),
+                "nome": v["nome"],
+                "loja": v["loja"],
+                "modalidade": modalidade,
+                "valor": valor,
+            })
+
+    mix_df = pd.DataFrame(linhas, columns=["vendedor_id", "nome", "loja", "modalidade", "valor"])
+    return mix_df, realizado_com_mix
 
 
 # --------------------------------------------------------------------------
