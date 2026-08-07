@@ -239,21 +239,37 @@ def parse_linha_venda_diaria(linha):
     return {"nome": nome, "data": data_obj, "valor": valor}
 
 
-def campos_percentual_pagamento(key_prefix, valores_iniciais=None):
-    """Renderiza um número de entrada (0-100%) por modalidade de pagamento, em
-    colunas, e devolve um dict {modalidade: percentual}. Deve ser chamada dentro
-    de um `with st.form(...)`."""
-    valores_iniciais = valores_iniciais or {}
-    percentuais = {}
+def campos_mix_pagamento(key_prefix, modo="pct"):
+    """Renderiza um número de entrada por modalidade de pagamento, em colunas —
+    em % (0-100, modo='pct') ou em R$ (modo='valor'). Devolve (percentuais_dict,
+    soma_informada). No modo 'valor', o percentual de cada modalidade é calculado
+    automaticamente dividindo o valor informado pela soma de todos os valores
+    informados (auto-normalizado — não precisa bater com o realizado do dia/mês
+    até o centavo, só precisa refletir a proporção certa entre as modalidades).
+    Deve ser chamada dentro de um `with st.form(...)`."""
+    valores_brutos = {}
     cols = st.columns(len(db.MODALIDADES_PAGAMENTO))
     for col, modalidade in zip(cols, db.MODALIDADES_PAGAMENTO):
         with col:
-            percentuais[modalidade] = st.number_input(
-                modalidade, min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
-                value=float(valores_iniciais.get(modalidade, 0.0)),
-                key=f"{key_prefix}_{modalidade}",
-            )
-    return percentuais
+            if modo == "pct":
+                valores_brutos[modalidade] = st.number_input(
+                    modalidade, min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
+                    key=f"{key_prefix}_{modalidade}",
+                )
+            else:
+                valores_brutos[modalidade] = st.number_input(
+                    modalidade, min_value=0.0, step=50.0, format="%.2f",
+                    key=f"{key_prefix}_{modalidade}",
+                )
+    soma_informada = sum(valores_brutos.values())
+    if modo == "pct":
+        percentuais = valores_brutos
+    else:
+        percentuais = {
+            m: (v / soma_informada * 100 if soma_informada > 0 else 0.0)
+            for m, v in valores_brutos.items()
+        }
+    return percentuais, soma_informada
 
 
 tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
@@ -498,6 +514,10 @@ with tab_metas:
     if vendedores_df_pgto_mes.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
+        modo_pgto_mes = st.radio(
+            "Como prefere informar o mix do mês?", ["Percentual (%)", "Valor em R$"],
+            horizontal=True, key="modo_pgto_mes",
+        )
         with st.form("form_pagamento_mes", clear_on_submit=False):
             colp1, colp2, colp3 = st.columns(3)
             opcoes_vend_pg = {
@@ -516,14 +536,23 @@ with tab_metas:
                     index=date.today().month - 1, key="mes_pgto_mes",
                 )
 
-            percentuais_mes = campos_percentual_pagamento("pgto_mes")
-            soma_mes = sum(percentuais_mes.values())
-            st.caption(f"Soma atual: {soma_mes:.1f}% (precisa fechar em 100%).")
+            modo_interno_mes = "pct" if modo_pgto_mes == "Percentual (%)" else "valor"
+            percentuais_mes, soma_mes = campos_mix_pagamento("pgto_mes", modo_interno_mes)
+            if modo_interno_mes == "pct":
+                st.caption(f"Soma atual: {soma_mes:.1f}% (precisa fechar em 100%).")
+            else:
+                st.caption(
+                    f"Soma informada: {db.formatar_moeda(soma_mes)} — essa soma vira a base "
+                    "de 100% para calcular o percentual de cada modalidade (não precisa bater "
+                    "com o realizado do mês até o centavo, só refletir a proporção certa)."
+                )
 
             enviado_pgto_mes = st.form_submit_button("💾 Salvar mix de pagamento do mês")
             if enviado_pgto_mes:
-                if abs(soma_mes - 100.0) > 0.5:
+                if modo_interno_mes == "pct" and abs(soma_mes - 100.0) > 0.5:
                     st.error(f"Os percentuais somam {soma_mes:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
+                elif modo_interno_mes == "valor" and soma_mes <= 0:
+                    st.error("Informe pelo menos um valor em R$ maior que zero.")
                 else:
                     vendedor_id_pg = opcoes_vend_pg[escolha_vend_pg]
                     db.upsert_pagamento_mensal(vendedor_id_pg, int(ano_pg), int(mes_pg), percentuais_mes)
@@ -837,12 +866,16 @@ with tab_lancamentos:
     st.markdown("---")
     st.subheader("💳 Lançar mix de pagamento do dia")
     st.caption(
-        "Percentual de cada modalidade nas vendas do dia (precisa que o valor vendido do "
-        "dia já esteja lançado acima). Os 7 percentuais devem somar 100%."
+        "Percentual (ou valor em R$) de cada modalidade nas vendas do dia (precisa que "
+        "o valor vendido do dia já esteja lançado acima)."
     )
     if vendedores_df.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
+        modo_pgto_dia = st.radio(
+            "Como prefere informar o mix?", ["Percentual (%)", "Valor em R$"],
+            horizontal=True, key="modo_pgto_dia",
+        )
         with st.form("form_pagamento_dia", clear_on_submit=False):
             colpg1, colpg2 = st.columns(2)
             opcoes_vend_pgd = {
@@ -855,14 +888,23 @@ with tab_lancamentos:
                     "Data *", value=date.today(), max_value=date.today(), key="data_pgto_dia"
                 )
 
-            percentuais_dia = campos_percentual_pagamento("pgto_dia")
-            soma_dia = sum(percentuais_dia.values())
-            st.caption(f"Soma atual: {soma_dia:.1f}% (precisa fechar em 100%).")
+            modo_interno_dia = "pct" if modo_pgto_dia == "Percentual (%)" else "valor"
+            percentuais_dia, soma_dia = campos_mix_pagamento("pgto_dia", modo_interno_dia)
+            if modo_interno_dia == "pct":
+                st.caption(f"Soma atual: {soma_dia:.1f}% (precisa fechar em 100%).")
+            else:
+                st.caption(
+                    f"Soma informada: {db.formatar_moeda(soma_dia)} — essa soma vira a base "
+                    "de 100% para calcular o percentual de cada modalidade (não precisa bater "
+                    "com o valor vendido do dia até o centavo, só refletir a proporção certa)."
+                )
 
             enviado_pgto_dia = st.form_submit_button("💾 Salvar mix de pagamento do dia")
             if enviado_pgto_dia:
-                if abs(soma_dia - 100.0) > 0.5:
+                if modo_interno_dia == "pct" and abs(soma_dia - 100.0) > 0.5:
                     st.error(f"Os percentuais somam {soma_dia:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
+                elif modo_interno_dia == "valor" and soma_dia <= 0:
+                    st.error("Informe pelo menos um valor em R$ maior que zero.")
                 else:
                     vendedor_id_pgd = opcoes_vend_pgd[escolha_vend_pgd]
                     db.upsert_pagamento_dia(vendedor_id_pgd, data_pgto_dia, percentuais_dia)

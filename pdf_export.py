@@ -12,6 +12,7 @@ realizado diário no período.
 import io
 from datetime import datetime
 
+import numpy as np
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -83,6 +84,47 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
         "pct_np_historico": next(
             (l["media_historica_pct"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
         ) if mix_hist_total > 0 else None,
+        **_kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total),
+    }
+
+
+def _kpis_inadimplencia(vendedor_id, ano, mes, mix_pagamento, mix_mes_total):
+    """Índice de inadimplência do mês (se já lançado), série histórica, tendência
+    (regressão linear) e o valor esperado em risco (valor vendido a prazo no mês ×
+    a taxa histórica de inadimplência do próprio vendedor)."""
+    valor_a_prazo_mes = (
+        next((l["valor_mes"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0)
+        if mix_mes_total > 0 else 0.0
+    )
+    valor_em_aberto_mes = db.get_inadimplencia_vendedor(vendedor_id, ano, mes)
+    indice_mes_pct = (
+        (valor_em_aberto_mes / valor_a_prazo_mes * 100)
+        if (valor_em_aberto_mes is not None and valor_a_prazo_mes > 0) else None
+    )
+
+    resumo = db.get_indice_inadimplencia_resumo_vendedor(vendedor_id)
+    hist = resumo["historico"]
+    hist_valida = hist[hist["indice_pct"].notna()] if not hist.empty else hist
+    slope = None
+    if len(hist_valida) >= 3:
+        xs = np.arange(len(hist_valida), dtype=float)
+        ys = hist_valida["indice_pct"].to_numpy(dtype=float)
+        slope = float(np.polyfit(xs, ys, 1)[0])
+
+    valor_esperado_perda = (
+        valor_a_prazo_mes * resumo["media_ponderada_pct"] / 100
+        if resumo["media_ponderada_pct"] is not None else None
+    )
+
+    return {
+        "inadimp_valor_a_prazo_mes": valor_a_prazo_mes,
+        "inadimp_valor_em_aberto_mes": valor_em_aberto_mes,
+        "inadimp_indice_mes_pct": indice_mes_pct,
+        "inadimp_media_historica_pct": resumo["media_ponderada_pct"],
+        "inadimp_n_meses": resumo["n_meses"],
+        "inadimp_slope": slope,
+        "inadimp_nivel_risco": resumo["nivel_risco"],
+        "inadimp_valor_esperado_perda": valor_esperado_perda,
     }
 
 
@@ -195,6 +237,14 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
                 "Ainda sem histórico suficiente para calcular a média histórica.",
                 sub_style,
             ))
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(Paragraph(
+            "Metodologia: % do Mês e Realizado no Mês são calculados a partir do mix de "
+            "pagamento lançado nos formulários diário/mensal, cruzado com o valor "
+            "efetivamente vendido. Média Histórica (%) usa todo o histórico já lançado "
+            "para o vendedor, ponderado por R$ (não é a média simples dos meses).",
+            sub_style,
+        ))
         elementos.append(Spacer(1, 0.3 * cm))
 
     if kpis["pct_np_mes"] is not None:
@@ -216,6 +266,83 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
             f"⚠️ Risco de Nota Promissória: {kpis['pct_np_mes']:.1f}% do realizado do mês "
             f"({nivel_risco}){variacao_np_txt}",
             risco_estilo,
+        ))
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(Paragraph(
+            f"Metodologia: % do realizado do mês vendido em Nota Promissória. Faixas: "
+            f"🟢 Baixo (&lt; {db.RISCO_NP_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
+            f"({db.RISCO_NP_LIMIAR_BAIXO:.0f}–{db.RISCO_NP_LIMIAR_MODERADO:.0f}%), "
+            f"🔴 Alto (&gt; {db.RISCO_NP_LIMIAR_MODERADO:.0f}%).",
+            sub_style,
+        ))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if kpis["inadimp_valor_a_prazo_mes"] > 0 or kpis["inadimp_n_meses"] > 0:
+        elementos.append(Paragraph("Inadimplência (Vendas a Prazo)", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+
+        tendencia_txt = "—"
+        if kpis["inadimp_slope"] is not None:
+            slope = kpis["inadimp_slope"]
+            rotulo_slope = "piorando" if slope > 0.5 else ("melhorando" if slope < -0.5 else "estável")
+            tendencia_txt = f"{'+' if slope >= 0 else ''}{slope:.2f} pp/mês ({rotulo_slope})"
+
+        dados_inadimp = [
+            ["Indicador", "Valor"],
+            [
+                "Valor vendido a prazo (mês)",
+                db.formatar_moeda(kpis["inadimp_valor_a_prazo_mes"]),
+            ],
+            [
+                "Valor em aberto (mês)",
+                db.formatar_moeda(kpis["inadimp_valor_em_aberto_mes"])
+                if kpis["inadimp_valor_em_aberto_mes"] is not None else "— não lançado",
+            ],
+            [
+                "Índice de inadimplência (mês)",
+                f"{kpis['inadimp_indice_mes_pct']:.1f}%" if kpis["inadimp_indice_mes_pct"] is not None else "—",
+            ],
+            [
+                "Média histórica ponderada (%)",
+                f"{kpis['inadimp_media_historica_pct']:.1f}%"
+                if kpis["inadimp_media_historica_pct"] is not None else "—",
+            ],
+            ["Meses com dado histórico", str(kpis["inadimp_n_meses"])],
+            ["Tendência", tendencia_txt],
+            ["Nível de risco (histórico)", kpis["inadimp_nivel_risco"]],
+            [
+                "Valor esperado em risco (mês atual)",
+                db.formatar_moeda(kpis["inadimp_valor_esperado_perda"])
+                if kpis["inadimp_valor_esperado_perda"] is not None else "—",
+            ],
+        ]
+        tabela_inadimp = Table(dados_inadimp, colWidths=[8.5 * cm, 7.5 * cm])
+        tabela_inadimp.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        elementos.append(tabela_inadimp)
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(Paragraph(
+            "Metodologia: Índice de inadimplência = valor em aberto ÷ valor vendido a "
+            "prazo (Nota Promissória) daquele mês de venda — o valor em aberto só é "
+            "apurado a partir de 30 dias, quando o prazo já venceu. Média histórica "
+            "ponderada = soma de todo valor em aberto já lançado ÷ soma de todo o valor "
+            "vendido a prazo (todos os meses). Tendência = inclinação da regressão "
+            "linear do índice mensal (mín. 3 meses com dado). Valor esperado em risco = "
+            "valor vendido a prazo no mês do relatório × a taxa histórica de "
+            f"inadimplência do vendedor. Faixas de risco: 🟢 Baixo "
+            f"(&lt; {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
+            f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
+            f"🔴 Alto (&gt; {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%).",
+            sub_style,
         ))
         elementos.append(Spacer(1, 0.3 * cm))
 
