@@ -77,6 +77,12 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
         "mix_pagamento": mix_pagamento,
         "mix_mes_total": mix_mes_total,
         "mix_hist_total": mix_hist_total,
+        "pct_np_mes": next(
+            (l["pct_mes"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
+        ) if mix_mes_total > 0 else None,
+        "pct_np_historico": next(
+            (l["media_historica_pct"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
+        ) if mix_hist_total > 0 else None,
     }
 
 
@@ -189,6 +195,28 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
                 "Ainda sem histórico suficiente para calcular a média histórica.",
                 sub_style,
             ))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if kpis["pct_np_mes"] is not None:
+        nivel_risco = db.nivel_risco_nota_promissoria(kpis["pct_np_mes"])
+        variacao_np_txt = ""
+        if kpis["pct_np_historico"] is not None:
+            diff_np = kpis["pct_np_mes"] - kpis["pct_np_historico"]
+            if diff_np > 5:
+                variacao_np_txt = f" — piorando {('+' if diff_np >= 0 else '')}{diff_np:.1f}pp vs. a média histórica."
+            elif diff_np < -5:
+                variacao_np_txt = f" — melhorando {diff_np:.1f}pp vs. a média histórica."
+            else:
+                variacao_np_txt = " — estável frente à média histórica."
+        risco_estilo = ParagraphStyle(
+            "risco", parent=styles["Normal"], textColor=colors.HexColor("#7a3b00"),
+            backColor=colors.HexColor("#fff3e0"), borderPadding=6,
+        )
+        elementos.append(Paragraph(
+            f"⚠️ Risco de Nota Promissória: {kpis['pct_np_mes']:.1f}% do realizado do mês "
+            f"({nivel_risco}){variacao_np_txt}",
+            risco_estilo,
+        ))
         elementos.append(Spacer(1, 0.3 * cm))
 
     vendas = kpis["vendas"]

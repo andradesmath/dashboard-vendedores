@@ -794,6 +794,51 @@ def get_mix_pagamento_mes(ano, mes, loja=None):
     return mix_df, realizado_com_mix
 
 
+# Faixas de risco de exposição a Nota Promissória (% do realizado com mix informado).
+RISCO_NP_LIMIAR_BAIXO = 10.0
+RISCO_NP_LIMIAR_MODERADO = 25.0
+
+
+def nivel_risco_nota_promissoria(pct):
+    """Classifica o % de Nota Promissória sobre o realizado em Baixo/Moderado/Alto risco."""
+    if pct is None:
+        return "— sem dado"
+    if pct < RISCO_NP_LIMIAR_BAIXO:
+        return "🟢 Baixo"
+    elif pct <= RISCO_NP_LIMIAR_MODERADO:
+        return "🟡 Moderado"
+    return "🔴 Alto"
+
+
+def get_risco_nota_promissoria_mes(ano, mes, loja=None):
+    """Por vendedor ativo do filtro: exposição em Nota Promissória no mês (R$ e %),
+    média histórica (%) de Nota Promissória e nível de risco resultante. Cruza o mix
+    do mês (get_mix_pagamento_vendedor_mes) com todo o histórico já lançado
+    (get_mix_pagamento_historico_vendedor)."""
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    linhas = []
+    for _, v in vendedores_df.iterrows():
+        vendedor_id = int(v["id"])
+        valores_mes, total_mes = get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes)
+        valor_np_mes = valores_mes.get("Nota Promissória", 0.0)
+        pct_np_mes = (valor_np_mes / total_mes * 100) if total_mes > 0 else None
+
+        medias_hist, total_hist = get_mix_pagamento_historico_vendedor(vendedor_id)
+        pct_np_hist = medias_hist.get("Nota Promissória", 0.0) if total_hist > 0 else None
+
+        linhas.append({
+            "vendedor_id": vendedor_id,
+            "nome": v["nome"],
+            "loja": v["loja"],
+            "valor_np_mes": valor_np_mes,
+            "total_com_mix_mes": total_mes,
+            "pct_np_mes": pct_np_mes,
+            "pct_np_historico": pct_np_hist,
+            "nivel_risco": nivel_risco_nota_promissoria(pct_np_mes),
+        })
+    return pd.DataFrame(linhas)
+
+
 # --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------

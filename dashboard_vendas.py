@@ -487,10 +487,12 @@ with tab_metas:
     st.subheader("💳 Mix de pagamento do mês (dado agregado)")
     st.caption(
         "Use quando só se sabe o percentual por modalidade do mês inteiro, sem quebra "
-        "diária (ex.: meses históricos). Precisa que o realizado do mês já tenha sido "
-        "lançado em '🧾 Pedidos do mês' → seção de Realizado (aba Metas, importação de "
-        "histórico) para que o valor em R$ de cada modalidade possa ser calculado. "
-        "Os 7 percentuais devem somar 100%."
+        "diária — útil para meses passados (histórico) ou para completar dias sem mix "
+        "lançado. Funciona com qualquer mês que já tenha realizado registrado (lançamento "
+        "diário ou importação de histórico): o percentual é aplicado sobre a parte do "
+        "realizado do mês que ainda não tem mix diário informado. Se não houver realizado "
+        "lançado para o mês, o mix fica salvo mas sem valor em R$ até que o realizado seja "
+        "lançado. Os 7 percentuais devem somar 100%."
     )
     vendedores_df_pgto_mes = db.get_vendedores(apenas_ativos=True)
     if vendedores_df_pgto_mes.empty:
@@ -1872,6 +1874,66 @@ with tab_dashboard:
             pivot_fmt[["nome", "loja"] + db.MODALIDADES_PAGAMENTO].rename(
                 columns={"nome": "Nome", "loja": "Loja"}
             ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("---")
+
+    # ---- Risco de Nota Promissória ----
+    st.markdown("### ⚠️ Risco de Nota Promissória")
+    st.caption(
+        "Nota promissória aumenta o risco da venda (recebimento não garantido no ato). "
+        "Exposição = % do realizado com mix informado que foi vendido em nota promissória. "
+        f"Faixas: 🟢 Baixo (< {db.RISCO_NP_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
+        f"({db.RISCO_NP_LIMIAR_BAIXO:.0f}–{db.RISCO_NP_LIMIAR_MODERADO:.0f}%), 🔴 Alto "
+        f"(> {db.RISCO_NP_LIMIAR_MODERADO:.0f}%). Comparado com a média histórica do próprio "
+        "vendedor para sinalizar se a exposição está piorando."
+    )
+
+    risco_np_df = db.get_risco_nota_promissoria_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+
+    if risco_np_df.empty:
+        st.info("Nenhum vendedor ativo no filtro selecionado.")
+    else:
+        valor_np_total = float(risco_np_df["valor_np_mes"].sum())
+        total_com_mix_total = float(risco_np_df["total_com_mix_mes"].sum())
+        pct_np_loja = (valor_np_total / total_com_mix_total * 100) if total_com_mix_total > 0 else None
+
+        col_np1, col_np2, col_np3 = st.columns(3)
+        kpi_card(col_np1, "Exposição em Nota Promissória (mês)", db.formatar_moeda(valor_np_total))
+        kpi_card(
+            col_np2, "% do Realizado (com mix) em Nota Promissória",
+            f"{pct_np_loja:.1f}%" if pct_np_loja is not None else "—",
+        )
+        kpi_card(col_np3, "Nível de Risco do Filtro", db.nivel_risco_nota_promissoria(pct_np_loja))
+
+        def _variacao_risco(row):
+            if row["pct_np_mes"] is None or row["pct_np_historico"] is None:
+                return "—"
+            diff = row["pct_np_mes"] - row["pct_np_historico"]
+            if diff > 5:
+                return f"↑ piorando ({'+' if diff >= 0 else ''}{diff:.1f}pp)"
+            if diff < -5:
+                return f"↓ melhorando ({diff:.1f}pp)"
+            return f"≈ estável ({'+' if diff >= 0 else ''}{diff:.1f}pp)"
+
+        risco_fmt = risco_np_df.copy()
+        risco_fmt["_ordenacao"] = risco_fmt["pct_np_mes"].fillna(-1)
+        risco_fmt = risco_fmt.sort_values("_ordenacao", ascending=False)
+        risco_fmt["Exposição no Mês"] = risco_fmt["valor_np_mes"].apply(db.formatar_moeda)
+        risco_fmt["% do Mês"] = risco_fmt["pct_np_mes"].apply(
+            lambda v: f"{v:.1f}%" if v is not None else "—"
+        )
+        risco_fmt["Média Histórica (%)"] = risco_fmt["pct_np_historico"].apply(
+            lambda v: f"{v:.1f}%" if v is not None else "—"
+        )
+        risco_fmt["Variação vs. Histórico"] = risco_fmt.apply(_variacao_risco, axis=1)
+        st.dataframe(
+            risco_fmt[
+                ["nome", "loja", "Exposição no Mês", "% do Mês", "Média Histórica (%)",
+                 "Variação vs. Histórico", "nivel_risco"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
             use_container_width=True,
             hide_index=True,
         )
