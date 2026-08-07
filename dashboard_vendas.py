@@ -1503,6 +1503,171 @@ with tab_dashboard:
 
     st.markdown("---")
 
+    # ---- Vendedores em Atenção (sinal para plano de ação / troca) ----
+    st.markdown("### ⚠️ Vendedores em Atenção")
+    st.caption(
+        "Sinal construído a partir de TODO o histórico do vendedor (todos os meses com meta "
+        "lançada) somado à projeção do mês corrente. Não é uma decisão automática de troca — "
+        "serve como gatilho para um plano de ação (30/60/90 dias) antes de qualquer decisão."
+    )
+
+    historico_full = db.get_historico_meta_realizado(loja=loja_filtro)
+
+    if historico_full.empty or indicadores_atual.empty:
+        st.info("Sem histórico suficiente para calcular os sinais de atenção.")
+    else:
+        LIMIAR_CRITICO = 70.0
+        LIMIAR_ATUAL_CRITICO = 60.0
+        LIMIAR_CV_ALTO = 40.0
+        LIMIAR_MEDIA_BAIXA = 85.0
+        LIMIAR_SLOPE_NEGATIVO = -2.0
+
+        linhas_atencao = []
+        for row in indicadores_atual.itertuples():
+            hist_vend = historico_full[historico_full["vendedor_id"] == row.vendedor_id].copy()
+            hist_vend = hist_vend[hist_vend["valor_meta"] > 0]
+            hist_vend["atingimento_pct"] = hist_vend["realizado"] / hist_vend["valor_meta"] * 100
+            hist_vend = hist_vend.sort_values(["ano", "mes"])
+            n_meses_hist = len(hist_vend)
+
+            # Projeção do mês corrente (mesmo run-rate usado no KPI "Projeção de Fechamento" da loja)
+            if dias_transcorridos > 0 and dias_transcorridos < dias_uteis_total and row.realizado > 0 and row.valor_meta > 0:
+                atingimento_atual_proj = (
+                    (row.realizado / dias_transcorridos * dias_uteis_total) / row.valor_meta * 100
+                )
+            else:
+                atingimento_atual_proj = row.atingimento_pct
+
+            # Histórico excluindo o mês atual (evita duplicar o efeito da projeção)
+            hist_sem_atual = hist_vend[
+                ~((hist_vend["ano"] == ano_filtro) & (hist_vend["mes"] == mes_filtro))
+            ]
+
+            ultimos_3 = hist_sem_atual.tail(3)
+            n_ultimos_3 = len(ultimos_3)
+            n_criticos_ultimos_3 = int((ultimos_3["atingimento_pct"] < LIMIAR_CRITICO).sum())
+            criterio_persistencia = n_ultimos_3 >= 2 and n_criticos_ultimos_3 >= 2
+
+            if len(hist_sem_atual) >= 3:
+                xs = np.arange(len(hist_sem_atual), dtype=float)
+                ys = hist_sem_atual["atingimento_pct"].to_numpy(dtype=float)
+                slope_hist = float(np.polyfit(xs, ys, 1)[0])
+                media_hist = float(hist_sem_atual["atingimento_pct"].mean())
+                std_hist = float(hist_sem_atual["atingimento_pct"].std(ddof=0))
+                cv_hist = (std_hist / media_hist * 100) if media_hist > 0 else None
+            else:
+                slope_hist, media_hist, cv_hist = None, None, None
+
+            criterio_tendencia = slope_hist is not None and slope_hist < LIMIAR_SLOPE_NEGATIVO
+            criterio_atual = row.valor_meta > 0 and atingimento_atual_proj < LIMIAR_ATUAL_CRITICO
+            criterio_consistencia = (
+                cv_hist is not None and media_hist is not None
+                and cv_hist > LIMIAR_CV_ALTO and media_hist < LIMIAR_MEDIA_BAIXA
+            )
+
+            criterios_atendidos = sum(
+                [criterio_persistencia, criterio_tendencia, criterio_atual, criterio_consistencia]
+            )
+            if criterios_atendidos >= 3:
+                zona = "🔴 Crítico"
+            elif criterios_atendidos >= 1:
+                zona = "🟡 Atenção"
+            else:
+                zona = "🟢 Ok"
+
+            dias_sem_lanc_row = avancado_df[avancado_df["vendedor_id"] == row.vendedor_id]
+            dias_sem_lanc = (
+                int(dias_sem_lanc_row["dias_sem_lancamento"].iloc[0])
+                if not dias_sem_lanc_row.empty and "dias_sem_lancamento" in dias_sem_lanc_row.columns
+                else None
+            )
+
+            linhas_atencao.append({
+                "vendedor_id": row.vendedor_id,
+                "nome": row.nome,
+                "loja": row.loja,
+                "zona": zona,
+                "criterios_atendidos": criterios_atendidos,
+                "n_meses_hist": n_meses_hist,
+                "atingimento_atual_proj": atingimento_atual_proj,
+                "slope_hist": slope_hist,
+                "cv_hist": cv_hist,
+                "persistencia": criterio_persistencia,
+                "tendencia": criterio_tendencia,
+                "atual_critico": criterio_atual,
+                "consistencia": criterio_consistencia,
+                "dias_sem_lancamento": dias_sem_lanc,
+            })
+
+        atencao_df = pd.DataFrame(linhas_atencao)
+        ordem_zona = {"🔴 Crítico": 0, "🟡 Atenção": 1, "🟢 Ok": 2}
+        atencao_df["ordem"] = atencao_df["zona"].map(ordem_zona)
+        atencao_df = atencao_df.sort_values(
+            ["ordem", "criterios_atendidos"], ascending=[True, False]
+        ).drop(columns=["ordem"])
+
+        n_criticos = int((atencao_df["zona"] == "🔴 Crítico").sum())
+        n_atencao = int((atencao_df["zona"] == "🟡 Atenção").sum())
+        if n_criticos > 0:
+            st.error(
+                f"🔴 {n_criticos} vendedor(es) em zona crítica — recomenda-se plano de ação "
+                "antes de qualquer decisão de troca."
+            )
+        elif n_atencao > 0:
+            st.warning(f"🟡 {n_atencao} vendedor(es) em zona de atenção.")
+        else:
+            st.success("🟢 Nenhum vendedor em zona de atenção ou crítica no momento.")
+
+        def _fmt_criterio(v):
+            return "🔴" if v else "—"
+
+        atencao_fmt = atencao_df.copy()
+        atencao_fmt["Meses no Histórico"] = atencao_fmt["n_meses_hist"]
+        atencao_fmt["Atingimento Atual (Projetado)"] = atencao_fmt["atingimento_atual_proj"].apply(
+            lambda v: f"{v:.1f}%"
+        )
+        atencao_fmt["Persistência (2 de 3 últimos < 70%)"] = atencao_fmt["persistencia"].apply(_fmt_criterio)
+        atencao_fmt["Tendência Histórica"] = atencao_fmt.apply(
+            lambda r: (
+                (f"{'+' if r['slope_hist'] >= 0 else ''}{r['slope_hist']:.1f} pp/mês")
+                if r["slope_hist"] is not None else "—"
+            ) + (" 🔴" if r["tendencia"] else ""),
+            axis=1,
+        )
+        atencao_fmt["Mês Atual Crítico"] = atencao_fmt["atual_critico"].apply(_fmt_criterio)
+        atencao_fmt["Consistência Histórica"] = atencao_fmt.apply(
+            lambda r: (
+                (f"CV {r['cv_hist']:.0f}%") if r["cv_hist"] is not None else "—"
+            ) + (" 🔴" if r["consistencia"] else ""),
+            axis=1,
+        )
+        atencao_fmt["Dias sem Lanç. (mês atual)"] = atencao_fmt["dias_sem_lancamento"].apply(
+            lambda v: str(v) if v is not None else "—"
+        )
+
+        st.dataframe(
+            atencao_fmt[
+                ["nome", "loja", "zona", "Meses no Histórico", "Atingimento Atual (Projetado)",
+                 "Persistência (2 de 3 últimos < 70%)", "Tendência Histórica", "Mês Atual Crítico",
+                 "Consistência Histórica", "Dias sem Lanç. (mês atual)"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja", "zona": "Zona"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Regras (cada uma soma 1 ponto; 3-4 pontos = 🔴 Crítico, 1-2 = 🟡 Atenção, 0 = 🟢 Ok): "
+            "Persistência = pelo menos 2 dos últimos 3 meses do histórico (excluindo o mês atual) "
+            "abaixo de 70% de atingimento • Tendência = inclinação negativa (< -2 pp/mês) na "
+            "regressão linear sobre todo o histórico • Mês Atual Crítico = atingimento projetado "
+            "do mês corrente (run-rate ÷ dias transcorridos × dias úteis do mês) abaixo de 60% • "
+            "Consistência Histórica = alta variação do atingimento mês a mês (CV > 40%) combinada "
+            "com média histórica abaixo de 85%. Vendedores com menos de 3 meses de histórico só são "
+            "avaliados pelo critério do Mês Atual — os demais exigem dados insuficientes e não "
+            "contam contra o vendedor (evita punir quem é novo por falta de histórico)."
+        )
+
+    st.markdown("---")
+
     # ---- Curva de concentração (Pareto 80/20) ----
     st.markdown("### 🎯 Curva de Concentração (Pareto 80/20)")
     if indicadores_atual.empty or indicadores_atual["realizado"].sum() <= 0:
