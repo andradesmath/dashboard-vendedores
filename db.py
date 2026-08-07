@@ -35,6 +35,19 @@ MESES_PT = {
     7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
 }
 
+MODALIDADES_PAGAMENTO = [
+    "Crédito", "Débito", "Dinheiro", "Pix", "Boleto", "Nota Promissória", "Voucher",
+]
+COLUNAS_PAGAMENTO = {
+    "Crédito": "pct_credito",
+    "Débito": "pct_debito",
+    "Dinheiro": "pct_dinheiro",
+    "Pix": "pct_pix",
+    "Boleto": "pct_boleto",
+    "Nota Promissória": "pct_nota_promissoria",
+    "Voucher": "pct_voucher",
+}
+
 
 def get_database_url():
     url = os.environ.get("DATABASE_URL")
@@ -125,6 +138,37 @@ def init_db():
             ano INTEGER NOT NULL,
             mes INTEGER NOT NULL,
             qtd_pedidos INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (vendedor_id, ano, mes)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pagamentos_diarios (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            data DATE NOT NULL,
+            pct_credito NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_debito NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_dinheiro NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_pix NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_boleto NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_nota_promissoria NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_voucher NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            UNIQUE (vendedor_id, data)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pagamentos_mensal_manual (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            ano INTEGER NOT NULL,
+            mes INTEGER NOT NULL,
+            pct_credito NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_debito NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_dinheiro NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_pix NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_boleto NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_nota_promissoria NUMERIC(5, 2) NOT NULL DEFAULT 0,
+            pct_voucher NUMERIC(5, 2) NOT NULL DEFAULT 0,
             UNIQUE (vendedor_id, ano, mes)
         )
         """,
@@ -541,6 +585,166 @@ def get_pedidos_manual_vendedor(vendedor_id, ano, mes):
         params={"vid": vendedor_id, "ano": ano, "mes": mes},
     )
     return int(df.iloc[0]["qtd_pedidos"]) if not df.empty else 0
+
+
+# --------------------------------------------------------------------------
+# Mix de pagamento (% por modalidade) - lançamento diário e mensal manual.
+# Guarda só os percentuais; o valor em R$ por modalidade é obtido cruzando com
+# o realizado já lançado (vendas_diarias para o diário, realizado_mensal_manual
+# para o manual) no momento de montar os indicadores, nunca duplicando dado.
+# --------------------------------------------------------------------------
+def upsert_pagamento_dia(vendedor_id, data_venda, percentuais):
+    """percentuais: dict {modalidade (label de MODALIDADES_PAGAMENTO): valor percentual}."""
+    data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    params = {"vendedor_id": vendedor_id, "data": data_str}
+    for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+        params[coluna] = float(percentuais.get(modalidade, 0.0))
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO pagamentos_diarios (vendedor_id, data, {", ".join(colunas)})
+                VALUES (:vendedor_id, :data, {", ".join(":" + c for c in colunas)})
+                ON CONFLICT (vendedor_id, data)
+                DO UPDATE SET {", ".join(f"{c} = EXCLUDED.{c}" for c in colunas)}
+                """
+            ),
+            params,
+        )
+
+
+def get_pagamento_dia_vendedor(vendedor_id, data_venda):
+    """Retorna o dict de percentuais já lançados para o vendedor/dia, ou None."""
+    data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    df = pd.read_sql_query(
+        text(f"SELECT {', '.join(colunas)} FROM pagamentos_diarios WHERE vendedor_id=:vid AND data=:data"),
+        get_engine(),
+        params={"vid": vendedor_id, "data": data_str},
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0]
+    return {modalidade: float(row[coluna]) for modalidade, coluna in COLUNAS_PAGAMENTO.items()}
+
+
+def get_pagamentos_dia_mes(ano, mes, loja=None):
+    """Mix diário do mês, já cruzado com o valor_realizado do dia (só dias com mix lançado)."""
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    query = f"""
+        SELECT v.id AS vendedor_id, v.nome, v.loja, vd.valor_realizado, {", ".join("pg." + c for c in colunas)}
+        FROM pagamentos_diarios pg
+        JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
+        JOIN vendedores v ON v.id = pg.vendedor_id
+        WHERE pg.data BETWEEN :ini AND :fim
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_realizado"] = df["valor_realizado"].astype(float)
+        for c in colunas:
+            df[c] = df[c].astype(float)
+    return df
+
+
+def upsert_pagamento_mensal(vendedor_id, ano, mes, percentuais):
+    """percentuais: dict {modalidade (label de MODALIDADES_PAGAMENTO): valor percentual}."""
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    params = {"vendedor_id": vendedor_id, "ano": ano, "mes": mes}
+    for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+        params[coluna] = float(percentuais.get(modalidade, 0.0))
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO pagamentos_mensal_manual (vendedor_id, ano, mes, {", ".join(colunas)})
+                VALUES (:vendedor_id, :ano, :mes, {", ".join(":" + c for c in colunas)})
+                ON CONFLICT (vendedor_id, ano, mes)
+                DO UPDATE SET {", ".join(f"{c} = EXCLUDED.{c}" for c in colunas)}
+                """
+            ),
+            params,
+        )
+
+
+def get_pagamento_manual_vendedor(vendedor_id, ano, mes):
+    """Retorna o dict de percentuais já lançados (manual mensal) para o vendedor/mês, ou None."""
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    df = pd.read_sql_query(
+        text(
+            f"SELECT {', '.join(colunas)} FROM pagamentos_mensal_manual "
+            "WHERE vendedor_id=:vid AND ano=:ano AND mes=:mes"
+        ),
+        get_engine(),
+        params={"vid": vendedor_id, "ano": ano, "mes": mes},
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0]
+    return {modalidade: float(row[coluna]) for modalidade, coluna in COLUNAS_PAGAMENTO.items()}
+
+
+def get_pagamentos_manual_mes(ano, mes, loja=None):
+    """Mix mensal manual, já cruzado com o valor_realizado manual do mês (só quem tiver os dois lançados)."""
+    colunas = list(COLUNAS_PAGAMENTO.values())
+    query = f"""
+        SELECT v.id AS vendedor_id, v.nome, v.loja, rm.valor_realizado, {", ".join("pm." + c for c in colunas)}
+        FROM pagamentos_mensal_manual pm
+        JOIN realizado_mensal_manual rm
+          ON rm.vendedor_id = pm.vendedor_id AND rm.ano = pm.ano AND rm.mes = pm.mes
+        JOIN vendedores v ON v.id = pm.vendedor_id
+        WHERE pm.ano = :ano AND pm.mes = :mes
+    """
+    params = {"ano": ano, "mes": mes}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_realizado"] = df["valor_realizado"].astype(float)
+        for c in colunas:
+            df[c] = df[c].astype(float)
+    return df
+
+
+def get_mix_pagamento_mes(ano, mes, loja=None):
+    """Combina o mix diário + manual do mês num DataFrame "longo" (uma linha por
+    vendedor/modalidade, com o valor em R$ daquela modalidade), mais a soma do
+    realizado que teve mix informado (para calcular cobertura em relação ao
+    realizado total do mês)."""
+    dia_df = get_pagamentos_dia_mes(ano, mes, loja=loja)
+    manual_df = get_pagamentos_manual_mes(ano, mes, loja=loja)
+
+    linhas = []
+    for origem_df in (dia_df, manual_df):
+        if origem_df.empty:
+            continue
+        for _, r in origem_df.iterrows():
+            for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+                valor_modalidade = float(r["valor_realizado"]) * float(r[coluna]) / 100.0
+                if valor_modalidade == 0.0 and float(r[coluna]) == 0.0:
+                    continue
+                linhas.append({
+                    "vendedor_id": r["vendedor_id"],
+                    "nome": r["nome"],
+                    "loja": r["loja"],
+                    "modalidade": modalidade,
+                    "valor": valor_modalidade,
+                })
+
+    mix_df = pd.DataFrame(linhas, columns=["vendedor_id", "nome", "loja", "modalidade", "valor"])
+    realizado_com_mix = (
+        (float(dia_df["valor_realizado"].sum()) if not dia_df.empty else 0.0)
+        + (float(manual_df["valor_realizado"].sum()) if not manual_df.empty else 0.0)
+    )
+    return mix_df, realizado_com_mix
 
 
 # --------------------------------------------------------------------------

@@ -239,6 +239,23 @@ def parse_linha_venda_diaria(linha):
     return {"nome": nome, "data": data_obj, "valor": valor}
 
 
+def campos_percentual_pagamento(key_prefix, valores_iniciais=None):
+    """Renderiza um número de entrada (0-100%) por modalidade de pagamento, em
+    colunas, e devolve um dict {modalidade: percentual}. Deve ser chamada dentro
+    de um `with st.form(...)`."""
+    valores_iniciais = valores_iniciais or {}
+    percentuais = {}
+    cols = st.columns(len(db.MODALIDADES_PAGAMENTO))
+    for col, modalidade in zip(cols, db.MODALIDADES_PAGAMENTO):
+        with col:
+            percentuais[modalidade] = st.number_input(
+                modalidade, min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
+                value=float(valores_iniciais.get(modalidade, 0.0)),
+                key=f"{key_prefix}_{modalidade}",
+            )
+    return percentuais
+
+
 tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
     ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard"]
 )
@@ -465,6 +482,54 @@ with tab_metas:
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
+
+    st.markdown("---")
+    st.subheader("💳 Mix de pagamento do mês (dado agregado)")
+    st.caption(
+        "Use quando só se sabe o percentual por modalidade do mês inteiro, sem quebra "
+        "diária (ex.: meses históricos). Precisa que o realizado do mês já tenha sido "
+        "lançado em '🧾 Pedidos do mês' → seção de Realizado (aba Metas, importação de "
+        "histórico) para que o valor em R$ de cada modalidade possa ser calculado. "
+        "Os 7 percentuais devem somar 100%."
+    )
+    vendedores_df_pgto_mes = db.get_vendedores(apenas_ativos=True)
+    if vendedores_df_pgto_mes.empty:
+        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
+    else:
+        with st.form("form_pagamento_mes", clear_on_submit=False):
+            colp1, colp2, colp3 = st.columns(3)
+            opcoes_vend_pg = {
+                f"{row['nome']} ({row['loja']})": row["id"]
+                for _, row in vendedores_df_pgto_mes.iterrows()
+            }
+            with colp1:
+                escolha_vend_pg = st.selectbox("Vendedor *", list(opcoes_vend_pg.keys()), key="sel_pgto_mes")
+            with colp2:
+                ano_pg = st.number_input(
+                    "Ano *", min_value=2020, max_value=2035, value=date.today().year, step=1, key="ano_pgto_mes"
+                )
+            with colp3:
+                mes_pg = st.selectbox(
+                    "Mês *", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                    index=date.today().month - 1, key="mes_pgto_mes",
+                )
+
+            percentuais_mes = campos_percentual_pagamento("pgto_mes")
+            soma_mes = sum(percentuais_mes.values())
+            st.caption(f"Soma atual: {soma_mes:.1f}% (precisa fechar em 100%).")
+
+            enviado_pgto_mes = st.form_submit_button("💾 Salvar mix de pagamento do mês")
+            if enviado_pgto_mes:
+                if abs(soma_mes - 100.0) > 0.5:
+                    st.error(f"Os percentuais somam {soma_mes:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
+                else:
+                    vendedor_id_pg = opcoes_vend_pg[escolha_vend_pg]
+                    db.upsert_pagamento_mensal(vendedor_id_pg, int(ano_pg), int(mes_pg), percentuais_mes)
+                    st.success(
+                        f"Mix de pagamento salvo para {escolha_vend_pg} em {db.MESES_PT[mes_pg]}/{ano_pg}."
+                    )
+                    st.session_state.versao_dados += 1
+                    st.rerun()
 
     st.markdown("---")
     with st.expander("📥 Importar histórico de Meta x Realizado (meses anteriores)"):
@@ -718,6 +783,44 @@ with tab_lancamentos:
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
+
+    st.markdown("---")
+    st.subheader("💳 Lançar mix de pagamento do dia")
+    st.caption(
+        "Percentual de cada modalidade nas vendas do dia (precisa que o valor vendido do "
+        "dia já esteja lançado acima). Os 7 percentuais devem somar 100%."
+    )
+    if vendedores_df.empty:
+        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
+    else:
+        with st.form("form_pagamento_dia", clear_on_submit=False):
+            colpg1, colpg2 = st.columns(2)
+            opcoes_vend_pgd = {
+                f"{row['nome']} ({row['loja']})": row["id"] for _, row in vendedores_df.iterrows()
+            }
+            with colpg1:
+                escolha_vend_pgd = st.selectbox("Vendedor *", list(opcoes_vend_pgd.keys()), key="sel_pgto_dia")
+            with colpg2:
+                data_pgto_dia = st.date_input(
+                    "Data *", value=date.today(), max_value=date.today(), key="data_pgto_dia"
+                )
+
+            percentuais_dia = campos_percentual_pagamento("pgto_dia")
+            soma_dia = sum(percentuais_dia.values())
+            st.caption(f"Soma atual: {soma_dia:.1f}% (precisa fechar em 100%).")
+
+            enviado_pgto_dia = st.form_submit_button("💾 Salvar mix de pagamento do dia")
+            if enviado_pgto_dia:
+                if abs(soma_dia - 100.0) > 0.5:
+                    st.error(f"Os percentuais somam {soma_dia:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
+                else:
+                    vendedor_id_pgd = opcoes_vend_pgd[escolha_vend_pgd]
+                    db.upsert_pagamento_dia(vendedor_id_pgd, data_pgto_dia, percentuais_dia)
+                    st.success(
+                        f"Mix de pagamento salvo: {escolha_vend_pgd} — {data_pgto_dia.strftime('%d/%m/%Y')}."
+                    )
+                    st.session_state.versao_dados += 1
+                    st.rerun()
 
     st.markdown("---")
     with st.expander("📥 Importar vendas diárias em lote (sem pedidos)"):
@@ -1703,6 +1806,74 @@ with tab_dashboard:
         st.caption(
             f"📌 {n_concentra_80} de {len(pareto_df)} vendedor(es) concentram 80% do realizado "
             f"do filtro selecionado (linha vermelha pontilhada = 80% acumulado)."
+        )
+
+    st.markdown("---")
+
+    # ---- Mix de Pagamento ----
+    st.markdown("### 💳 Mix de Pagamento")
+    st.caption(
+        "Percentual do realizado por modalidade de pagamento, calculado a partir dos "
+        "lançamentos diários e/ou mensais de mix informados (aba Lançamentos Diários / "
+        "aba Metas). Cobre só a parte do realizado que já tem mix de pagamento lançado."
+    )
+
+    mix_df, realizado_com_mix = db.get_mix_pagamento_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    cobertura_pct = (realizado_com_mix / realizado_total * 100) if realizado_total > 0 else 0.0
+
+    if mix_df.empty:
+        st.info("Nenhum mix de pagamento lançado ainda para o filtro selecionado.")
+    else:
+        st.caption(
+            f"📊 Cobertura: {db.formatar_moeda(realizado_com_mix)} de "
+            f"{db.formatar_moeda(realizado_total)} do realizado do mês têm mix de pagamento "
+            f"informado ({cobertura_pct:.1f}%)."
+        )
+
+        agregado = mix_df.groupby("modalidade")["valor"].sum().reindex(db.MODALIDADES_PAGAMENTO, fill_value=0.0)
+        total_mix = agregado.sum()
+        agregado_pct = (agregado / total_mix * 100) if total_mix > 0 else agregado * 0
+
+        col_mix1, col_mix2 = st.columns([1.2, 1])
+        with col_mix1:
+            fig_mix = go.Figure(go.Bar(
+                x=agregado.index, y=agregado.values, marker_color=AZUL,
+                text=[f"{p:.1f}%" for p in agregado_pct.values], textposition="outside",
+            ))
+            fig_mix.update_layout(
+                yaxis=dict(title="Realizado (R$)"),
+                margin=dict(l=10, r=10, t=20, b=10), height=380,
+            )
+            st.plotly_chart(fig_mix, use_container_width=True)
+        with col_mix2:
+            fig_pizza = go.Figure(go.Pie(labels=agregado.index, values=agregado.values, hole=0.4))
+            fig_pizza.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=380)
+            st.plotly_chart(fig_pizza, use_container_width=True)
+
+        st.markdown("##### Mix de pagamento por vendedor")
+        por_vendedor = mix_df.groupby(["vendedor_id", "nome", "loja", "modalidade"])["valor"].sum().reset_index()
+        pivot_vendedor = por_vendedor.pivot_table(
+            index=["vendedor_id", "nome", "loja"], columns="modalidade", values="valor", fill_value=0.0
+        ).reset_index()
+        for modalidade in db.MODALIDADES_PAGAMENTO:
+            if modalidade not in pivot_vendedor.columns:
+                pivot_vendedor[modalidade] = 0.0
+        pivot_vendedor["total_com_mix"] = pivot_vendedor[db.MODALIDADES_PAGAMENTO].sum(axis=1)
+
+        pivot_fmt = pivot_vendedor.copy()
+        for modalidade in db.MODALIDADES_PAGAMENTO:
+            pivot_fmt[modalidade] = pivot_vendedor.apply(
+                lambda r, m=modalidade: (
+                    f"{(r[m] / r['total_com_mix'] * 100):.1f}%" if r["total_com_mix"] > 0 else "—"
+                ),
+                axis=1,
+            )
+        st.dataframe(
+            pivot_fmt[["nome", "loja"] + db.MODALIDADES_PAGAMENTO].rename(
+                columns={"nome": "Nome", "loja": "Loja"}
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
 
     st.markdown("---")
