@@ -239,36 +239,26 @@ def parse_linha_venda_diaria(linha):
     return {"nome": nome, "data": data_obj, "valor": valor}
 
 
-def campos_mix_pagamento(key_prefix, modo="pct"):
-    """Renderiza um número de entrada por modalidade de pagamento, em colunas —
-    em % (0-100, modo='pct') ou em R$ (modo='valor'). Devolve (percentuais_dict,
-    soma_informada). No modo 'valor', o percentual de cada modalidade é calculado
-    automaticamente dividindo o valor informado pela soma de todos os valores
-    informados (auto-normalizado — não precisa bater com o realizado do dia/mês
-    até o centavo, só precisa refletir a proporção certa entre as modalidades).
-    Deve ser chamada dentro de um `with st.form(...)`."""
+def campos_mix_pagamento(key_prefix):
+    """Renderiza um número de entrada em R$ por modalidade de pagamento, em colunas.
+    Devolve (percentuais_dict, soma_informada_rs) — o percentual de cada modalidade
+    é calculado automaticamente dividindo o valor em R$ informado pela soma de
+    todos os valores informados (não precisa bater com o realizado do dia/mês até
+    o centavo, só precisa refletir a proporção certa entre as modalidades). Deve
+    ser chamada dentro de um `with st.form(...)`."""
     valores_brutos = {}
     cols = st.columns(len(db.MODALIDADES_PAGAMENTO))
     for col, modalidade in zip(cols, db.MODALIDADES_PAGAMENTO):
         with col:
-            if modo == "pct":
-                valores_brutos[modalidade] = st.number_input(
-                    modalidade, min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
-                    key=f"{key_prefix}_{modalidade}",
-                )
-            else:
-                valores_brutos[modalidade] = st.number_input(
-                    modalidade, min_value=0.0, step=50.0, format="%.2f",
-                    key=f"{key_prefix}_{modalidade}",
-                )
+            valores_brutos[modalidade] = st.number_input(
+                modalidade, min_value=0.0, step=50.0, format="%.2f",
+                key=f"{key_prefix}_{modalidade}",
+            )
     soma_informada = sum(valores_brutos.values())
-    if modo == "pct":
-        percentuais = valores_brutos
-    else:
-        percentuais = {
-            m: (v / soma_informada * 100 if soma_informada > 0 else 0.0)
-            for m, v in valores_brutos.items()
-        }
+    percentuais = {
+        m: (v / soma_informada * 100 if soma_informada > 0 else 0.0)
+        for m, v in valores_brutos.items()
+    }
     return percentuais, soma_informada
 
 
@@ -502,22 +492,18 @@ with tab_metas:
     st.markdown("---")
     st.subheader("💳 Mix de pagamento do mês (dado agregado)")
     st.caption(
-        "Use quando só se sabe o percentual por modalidade do mês inteiro, sem quebra "
-        "diária — útil para meses passados (histórico) ou para completar dias sem mix "
-        "lançado. Funciona com qualquer mês que já tenha realizado registrado (lançamento "
-        "diário ou importação de histórico): o percentual é aplicado sobre a parte do "
-        "realizado do mês que ainda não tem mix diário informado. Se não houver realizado "
-        "lançado para o mês, o mix fica salvo mas sem valor em R$ até que o realizado seja "
-        "lançado. Os 7 percentuais devem somar 100%."
+        "Use quando só se sabe o valor por modalidade do mês inteiro, sem quebra diária "
+        "— útil para meses passados (histórico) ou para completar dias sem mix lançado. "
+        "Informe o valor em R$ de cada modalidade; o percentual de cada uma é calculado "
+        "automaticamente a partir da soma informada. Funciona com qualquer mês que já "
+        "tenha realizado registrado (lançamento diário ou importação de histórico): o "
+        "percentual resultante é aplicado sobre a parte do realizado do mês que ainda "
+        "não tem mix diário informado."
     )
     vendedores_df_pgto_mes = db.get_vendedores(apenas_ativos=True)
     if vendedores_df_pgto_mes.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
-        modo_pgto_mes = st.radio(
-            "Como prefere informar o mix do mês?", ["Percentual (%)", "Valor em R$"],
-            horizontal=True, key="modo_pgto_mes",
-        )
         with st.form("form_pagamento_mes", clear_on_submit=False):
             colp1, colp2, colp3 = st.columns(3)
             opcoes_vend_pg = {
@@ -536,22 +522,16 @@ with tab_metas:
                     index=date.today().month - 1, key="mes_pgto_mes",
                 )
 
-            modo_interno_mes = "pct" if modo_pgto_mes == "Percentual (%)" else "valor"
-            percentuais_mes, soma_mes = campos_mix_pagamento("pgto_mes", modo_interno_mes)
-            if modo_interno_mes == "pct":
-                st.caption(f"Soma atual: {soma_mes:.1f}% (precisa fechar em 100%).")
-            else:
-                st.caption(
-                    f"Soma informada: {db.formatar_moeda(soma_mes)} — essa soma vira a base "
-                    "de 100% para calcular o percentual de cada modalidade (não precisa bater "
-                    "com o realizado do mês até o centavo, só refletir a proporção certa)."
-                )
+            percentuais_mes, soma_mes = campos_mix_pagamento("pgto_mes")
+            st.caption(
+                f"Soma informada: {db.formatar_moeda(soma_mes)} — essa soma vira a base de "
+                "100% para calcular o percentual de cada modalidade (não precisa bater com o "
+                "realizado do mês até o centavo, só refletir a proporção certa)."
+            )
 
             enviado_pgto_mes = st.form_submit_button("💾 Salvar mix de pagamento do mês")
             if enviado_pgto_mes:
-                if modo_interno_mes == "pct" and abs(soma_mes - 100.0) > 0.5:
-                    st.error(f"Os percentuais somam {soma_mes:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
-                elif modo_interno_mes == "valor" and soma_mes <= 0:
+                if soma_mes <= 0:
                     st.error("Informe pelo menos um valor em R$ maior que zero.")
                 else:
                     vendedor_id_pg = opcoes_vend_pg[escolha_vend_pg]
@@ -561,54 +541,6 @@ with tab_metas:
                     )
                     st.session_state.versao_dados += 1
                     st.rerun()
-
-    st.markdown("---")
-    st.subheader("💸 Valores em aberto (vendas a prazo / Nota Promissória)")
-    st.caption(
-        "O risco de um mês só se confirma nos meses seguintes: o valor vendido a prazo "
-        "(Nota Promissória) num mês deveria ser recebido a partir do mês seguinte. Lance "
-        "aqui o valor que ainda está em aberto (não recebido) daquele mês de VENDA, "
-        "a partir de 30 dias — ex.: vendeu R$ 100 mil a prazo em fevereiro, recebeu R$ 98 "
-        "mil, lance R$ 2.000,00 em aberto para fevereiro. Pode atualizar o mesmo mês "
-        "conforme a cobrança evolui."
-    )
-    vendedores_df_inadimp = db.get_vendedores(apenas_ativos=True)
-    if vendedores_df_inadimp.empty:
-        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
-    else:
-        with st.form("form_inadimplencia", clear_on_submit=False):
-            coli1, coli2, coli3, coli4 = st.columns(4)
-            opcoes_vend_ina = {
-                f"{row['nome']} ({row['loja']})": row["id"]
-                for _, row in vendedores_df_inadimp.iterrows()
-            }
-            with coli1:
-                escolha_vend_ina = st.selectbox("Vendedor *", list(opcoes_vend_ina.keys()), key="sel_inadimp")
-            with coli2:
-                ano_ina = st.number_input(
-                    "Ano da venda *", min_value=2020, max_value=2035, value=date.today().year,
-                    step=1, key="ano_inadimp",
-                )
-            with coli3:
-                mes_ina = st.selectbox(
-                    "Mês da venda *", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
-                    index=date.today().month - 1, key="mes_inadimp",
-                )
-            with coli4:
-                valor_aberto_ina = st.number_input(
-                    "Valor em aberto (R$) *", min_value=0.0, step=100.0, format="%.2f", key="valor_inadimp"
-                )
-
-            enviado_inadimp = st.form_submit_button("💾 Salvar valor em aberto")
-            if enviado_inadimp:
-                vendedor_id_ina = opcoes_vend_ina[escolha_vend_ina]
-                db.upsert_inadimplencia(vendedor_id_ina, int(ano_ina), int(mes_ina), float(valor_aberto_ina))
-                st.success(
-                    f"Valor em aberto salvo: {escolha_vend_ina} — vendas de "
-                    f"{db.MESES_PT[mes_ina]}/{ano_ina} — {db.formatar_moeda(valor_aberto_ina)} em aberto."
-                )
-                st.session_state.versao_dados += 1
-                st.rerun()
 
     st.markdown("---")
     with st.expander("📥 Importar histórico de Meta x Realizado (meses anteriores)"):
@@ -866,16 +798,13 @@ with tab_lancamentos:
     st.markdown("---")
     st.subheader("💳 Lançar mix de pagamento do dia")
     st.caption(
-        "Percentual (ou valor em R$) de cada modalidade nas vendas do dia (precisa que "
-        "o valor vendido do dia já esteja lançado acima)."
+        "Valor em R$ de cada modalidade nas vendas do dia (precisa que o valor vendido "
+        "do dia já esteja lançado acima). O percentual de cada modalidade é calculado "
+        "automaticamente a partir da soma informada."
     )
     if vendedores_df.empty:
         st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
     else:
-        modo_pgto_dia = st.radio(
-            "Como prefere informar o mix?", ["Percentual (%)", "Valor em R$"],
-            horizontal=True, key="modo_pgto_dia",
-        )
         with st.form("form_pagamento_dia", clear_on_submit=False):
             colpg1, colpg2 = st.columns(2)
             opcoes_vend_pgd = {
@@ -888,22 +817,16 @@ with tab_lancamentos:
                     "Data *", value=date.today(), max_value=date.today(), key="data_pgto_dia"
                 )
 
-            modo_interno_dia = "pct" if modo_pgto_dia == "Percentual (%)" else "valor"
-            percentuais_dia, soma_dia = campos_mix_pagamento("pgto_dia", modo_interno_dia)
-            if modo_interno_dia == "pct":
-                st.caption(f"Soma atual: {soma_dia:.1f}% (precisa fechar em 100%).")
-            else:
-                st.caption(
-                    f"Soma informada: {db.formatar_moeda(soma_dia)} — essa soma vira a base "
-                    "de 100% para calcular o percentual de cada modalidade (não precisa bater "
-                    "com o valor vendido do dia até o centavo, só refletir a proporção certa)."
-                )
+            percentuais_dia, soma_dia = campos_mix_pagamento("pgto_dia")
+            st.caption(
+                f"Soma informada: {db.formatar_moeda(soma_dia)} — essa soma vira a base de "
+                "100% para calcular o percentual de cada modalidade (não precisa bater com o "
+                "valor vendido do dia até o centavo, só refletir a proporção certa)."
+            )
 
             enviado_pgto_dia = st.form_submit_button("💾 Salvar mix de pagamento do dia")
             if enviado_pgto_dia:
-                if modo_interno_dia == "pct" and abs(soma_dia - 100.0) > 0.5:
-                    st.error(f"Os percentuais somam {soma_dia:.1f}%, mas precisam somar 100%. Ajuste e salve de novo.")
-                elif modo_interno_dia == "valor" and soma_dia <= 0:
+                if soma_dia <= 0:
                     st.error("Informe pelo menos um valor em R$ maior que zero.")
                 else:
                     vendedor_id_pgd = opcoes_vend_pgd[escolha_vend_pgd]
@@ -2026,120 +1949,6 @@ with tab_dashboard:
             ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
             use_container_width=True,
             hide_index=True,
-        )
-
-    st.markdown("---")
-
-    # ---- Índice de Inadimplência (vendas a prazo) ----
-    st.markdown("### 📉 Índice de Inadimplência (Vendas a Prazo)")
-    st.caption(
-        "Cruza o valor vendido a prazo (Nota Promissória) de cada mês com o valor em "
-        "aberto lançado para esse mesmo mês de venda (aba Metas → 'Valores em aberto'). "
-        "Índice = valor em aberto ÷ valor vendido a prazo. Faixas: 🟢 Baixo "
-        f"(< {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
-        f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
-        f"🔴 Alto (> {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%)."
-    )
-
-    st.markdown(f"##### Vendas de {db.MESES_PT[mes_filtro]}/{ano_filtro}")
-    inadimp_mes_df = db.get_inadimplencia_mes(ano_filtro, mes_filtro, loja=loja_filtro)
-    if inadimp_mes_df.empty:
-        st.info("Nenhum vendedor ativo no filtro selecionado.")
-    else:
-        sem_dado_ina = inadimp_mes_df[inadimp_mes_df["valor_em_aberto"].isna()]
-        com_prazo_sem_dado = sem_dado_ina[sem_dado_ina["valor_a_prazo"] > 0]
-        if not com_prazo_sem_dado.empty:
-            st.caption(
-                "ℹ️ Venderam a prazo neste mês mas ainda sem valor em aberto lançado: "
-                + ", ".join(com_prazo_sem_dado["nome"].tolist())
-            )
-
-        inadimp_fmt = inadimp_mes_df.copy()
-        inadimp_fmt["Valor a Prazo"] = inadimp_fmt["valor_a_prazo"].apply(db.formatar_moeda)
-        inadimp_fmt["Valor em Aberto"] = inadimp_fmt["valor_em_aberto"].apply(
-            lambda v: db.formatar_moeda(v) if v is not None else "— não lançado"
-        )
-        inadimp_fmt["Índice (%)"] = inadimp_fmt["indice_pct"].apply(
-            lambda v: f"{v:.1f}%" if v is not None else "—"
-        )
-        st.dataframe(
-            inadimp_fmt[
-                ["nome", "loja", "Valor a Prazo", "Valor em Aberto", "Índice (%)", "nivel_risco"]
-            ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.markdown("##### Série histórica, tendência e correção do risco por vendedor")
-    linhas_resumo_inadimp = []
-    for row in indicadores_atual.itertuples():
-        resumo_ina = db.get_indice_inadimplencia_resumo_vendedor(row.vendedor_id)
-        hist_ina = resumo_ina["historico"]
-        hist_valida_ina = hist_ina[hist_ina["indice_pct"].notna()] if not hist_ina.empty else hist_ina
-
-        slope_ina = None
-        if len(hist_valida_ina) >= 3:
-            xs_ina = np.arange(len(hist_valida_ina), dtype=float)
-            ys_ina = hist_valida_ina["indice_pct"].to_numpy(dtype=float)
-            slope_ina = float(np.polyfit(xs_ina, ys_ina, 1)[0])
-
-        valores_mes_atual_ina, _ = db.get_mix_pagamento_vendedor_mes(row.vendedor_id, ano_filtro, mes_filtro)
-        valor_a_prazo_atual = valores_mes_atual_ina.get("Nota Promissória", 0.0)
-        valor_esperado_perda = (
-            valor_a_prazo_atual * resumo_ina["media_ponderada_pct"] / 100
-            if resumo_ina["media_ponderada_pct"] is not None else None
-        )
-
-        linhas_resumo_inadimp.append({
-            "nome": row.nome,
-            "loja": row.loja,
-            "media_historica_pct": resumo_ina["media_ponderada_pct"],
-            "n_meses": resumo_ina["n_meses"],
-            "slope": slope_ina,
-            "nivel_risco": resumo_ina["nivel_risco"],
-            "valor_a_prazo_atual": valor_a_prazo_atual,
-            "valor_esperado_perda": valor_esperado_perda,
-        })
-
-    resumo_inadimp_df = pd.DataFrame(linhas_resumo_inadimp)
-    if resumo_inadimp_df.empty:
-        st.info("Sem vendedores no filtro selecionado.")
-    else:
-        ordem_risco_ina = {"🔴 Alto": 0, "🟡 Moderado": 1, "🟢 Baixo": 2, "— sem dado": 3}
-        resumo_inadimp_df["_ordem"] = resumo_inadimp_df["nivel_risco"].map(ordem_risco_ina).fillna(3)
-        resumo_inadimp_df = resumo_inadimp_df.sort_values("_ordem")
-
-        resumo_fmt_ina = resumo_inadimp_df.copy()
-        resumo_fmt_ina["Média Histórica (%)"] = resumo_fmt_ina["media_historica_pct"].apply(
-            lambda v: f"{v:.1f}%" if v is not None else "—"
-        )
-        resumo_fmt_ina["Meses com Dado"] = resumo_fmt_ina["n_meses"]
-        resumo_fmt_ina["Tendência"] = resumo_fmt_ina["slope"].apply(
-            lambda v: (
-                f"{'+' if v >= 0 else ''}{v:.2f} pp/mês "
-                + ("📈 piorando" if v > 0.5 else ("📉 melhorando" if v < -0.5 else "➡️ estável"))
-            ) if v is not None else "—"
-        )
-        resumo_fmt_ina["Valor a Prazo (mês atual)"] = resumo_fmt_ina["valor_a_prazo_atual"].apply(db.formatar_moeda)
-        resumo_fmt_ina["Valor Esperado em Risco"] = resumo_fmt_ina["valor_esperado_perda"].apply(
-            lambda v: db.formatar_moeda(v) if v is not None else "—"
-        )
-        st.dataframe(
-            resumo_fmt_ina[
-                ["nome", "loja", "Média Histórica (%)", "Meses com Dado", "Tendência",
-                 "nivel_risco", "Valor a Prazo (mês atual)", "Valor Esperado em Risco"]
-            ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(
-            "Média Histórica (%) = soma de todo o valor em aberto já lançado ÷ soma de todo "
-            "o valor vendido a prazo (ponderada por R$ — mais justa que a média simples dos "
-            "meses). Tendência = inclinação da regressão linear do índice mensal ao longo do "
-            "tempo (precisa de pelo menos 3 meses com dado). Valor Esperado em Risco = valor "
-            "vendido a prazo no mês do filtro atual × a média histórica de inadimplência do "
-            "próprio vendedor — é a correção do risco de Nota Promissória com base no "
-            "comportamento real de pagamento de cada um, não só na exposição bruta."
         )
 
     st.markdown("---")
