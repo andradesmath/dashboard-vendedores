@@ -746,6 +746,136 @@ def get_pagamento_manual_vendedor(vendedor_id, ano, mes):
 
 
 @cache_leitura()
+def _mix_pagamento_lote_mes(ano, mes, loja=None, apenas_ativos=True):
+    """Versão EM LOTE (poucas queries no total, não uma por vendedor) do mix de
+    pagamento de todos os vendedores do filtro num mês específico. Substitui o
+    padrão antigo de chamar get_mix_pagamento_vendedor_mes uma vez por vendedor
+    (N queries) — aqui são sempre ~4 queries, não importa quantos vendedores.
+    Retorna um DataFrame com uma linha por vendedor: realizado_mes, total_coberto
+    e uma coluna em R$ por modalidade de pagamento."""
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    colunas = list(COLUNAS_PAGAMENTO.values())
+
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=apenas_ativos)
+    if vendedores_df.empty:
+        return pd.DataFrame(columns=["vendedor_id", "nome", "loja", "realizado_mes", "total_coberto"] + MODALIDADES_PAGAMENTO)
+
+    vendas_df = get_vendas_mes(ano, mes, loja=loja)
+    realizado_diario = (
+        vendas_df.groupby("vendedor_id")["valor_realizado"].sum() if not vendas_df.empty else pd.Series(dtype=float)
+    )
+    manual_df = get_realizado_manual_mes(ano, mes, loja=loja)
+    realizado_manual = (
+        manual_df.groupby("vendedor_id")["valor_realizado"].sum() if not manual_df.empty else pd.Series(dtype=float)
+    )
+
+    soma_cols = ", ".join(f"SUM(vd.valor_realizado * pg.{c} / 100.0) AS {c}" for c in colunas)
+    dia_df = pd.read_sql_query(
+        text(
+            f"""
+            SELECT pg.vendedor_id, SUM(vd.valor_realizado) AS total_coberto_diario, {soma_cols}
+            FROM pagamentos_diarios pg
+            JOIN vendas_diarias vd ON vd.vendedor_id = pg.vendedor_id AND vd.data = pg.data
+            WHERE pg.data BETWEEN :ini AND :fim
+            GROUP BY pg.vendedor_id
+            """
+        ),
+        get_engine(),
+        params={"ini": ini, "fim": fim},
+    )
+    dia_idx = dia_df.set_index("vendedor_id") if not dia_df.empty else None
+
+    mensal_df = pd.read_sql_query(
+        text(f"SELECT vendedor_id, {', '.join(colunas)} FROM pagamentos_mensal_manual WHERE ano=:ano AND mes=:mes"),
+        get_engine(),
+        params={"ano": ano, "mes": mes},
+    )
+    mensal_idx = mensal_df.set_index("vendedor_id") if not mensal_df.empty else None
+
+    linhas = []
+    for _, v in vendedores_df.iterrows():
+        vid = int(v["id"])
+        realizado_mes = float(realizado_diario.get(vid, 0.0)) + float(realizado_manual.get(vid, 0.0))
+
+        valores = {m: 0.0 for m in MODALIDADES_PAGAMENTO}
+        total_coberto_diario = 0.0
+        if dia_idx is not None and vid in dia_idx.index:
+            row_dia = dia_idx.loc[vid]
+            total_coberto_diario = float(row_dia["total_coberto_diario"] or 0.0)
+            for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+                valores[modalidade] = float(row_dia[coluna] or 0.0)
+
+        realizado_restante = max(realizado_mes - total_coberto_diario, 0.0)
+        total_coberto = total_coberto_diario
+        if mensal_idx is not None and vid in mensal_idx.index and realizado_restante > 0:
+            row_mensal = mensal_idx.loc[vid]
+            for modalidade, coluna in COLUNAS_PAGAMENTO.items():
+                valores[modalidade] += realizado_restante * float(row_mensal[coluna] or 0.0) / 100.0
+            total_coberto += realizado_restante
+
+        linha = {
+            "vendedor_id": vid, "nome": v["nome"], "loja": v["loja"],
+            "realizado_mes": realizado_mes, "total_coberto": total_coberto,
+        }
+        linha.update(valores)
+        linhas.append(linha)
+
+    return pd.DataFrame(linhas)
+
+
+@cache_leitura()
+def _mix_pagamento_lote_historico(loja=None, apenas_ativos=True):
+    """Versão EM LOTE do mix de pagamento histórico (todos os meses já lançados,
+    de qualquer vendedor) de todos os vendedores do filtro. Em vez de uma query
+    por vendedor por mês (o que causava lentidão/timeout com vários vendedores e
+    vários meses de histórico), faz uma passada por MÊS DISTINTO do sistema
+    (tipicamente bem menos que vendedores × meses) reusando _mix_pagamento_lote_mes,
+    que já é cacheado. Retorna um DataFrame com uma linha por vendedor: total_geral
+    (R$ com mix lançado, soma de todos os meses) e uma coluna por modalidade."""
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=apenas_ativos)
+    if vendedores_df.empty:
+        return pd.DataFrame(columns=["vendedor_id", "nome", "loja", "total_geral"] + MODALIDADES_PAGAMENTO)
+
+    meses_df = pd.read_sql_query(
+        text(
+            """
+            SELECT DISTINCT ano, mes FROM (
+                SELECT EXTRACT(YEAR FROM data)::int AS ano, EXTRACT(MONTH FROM data)::int AS mes
+                FROM pagamentos_diarios
+                UNION
+                SELECT ano, mes FROM pagamentos_mensal_manual
+            ) t
+            """
+        ),
+        get_engine(),
+    )
+
+    ids_validos = set(vendedores_df["id"].astype(int))
+    acumulado = {vid: {m: 0.0 for m in MODALIDADES_PAGAMENTO} for vid in ids_validos}
+
+    for _, row in meses_df.iterrows():
+        mes_df = _mix_pagamento_lote_mes(int(row["ano"]), int(row["mes"]), loja=loja, apenas_ativos=apenas_ativos)
+        for _, vr in mes_df.iterrows():
+            vid = int(vr["vendedor_id"])
+            if vid not in acumulado:
+                continue
+            for modalidade in MODALIDADES_PAGAMENTO:
+                acumulado[vid][modalidade] += float(vr[modalidade])
+
+    nomes = {int(v["id"]): (v["nome"], v["loja"]) for _, v in vendedores_df.iterrows()}
+    linhas = []
+    for vid, valores in acumulado.items():
+        total_geral = sum(valores.values())
+        nome, loja_v = nomes[vid]
+        linha = {"vendedor_id": vid, "nome": nome, "loja": loja_v, "total_geral": total_geral}
+        linha.update(valores)
+        linhas.append(linha)
+    return pd.DataFrame(linhas)
+
+
+@cache_leitura()
 def _mix_diario_vendedor_periodo(vendedor_id, ini=None, fim=None):
     """Soma, por modalidade, o valor em R$ coberto por lançamentos DIÁRIOS de mix no
     período (ou em todo o histórico, se ini/fim não informados). Retorna (valores_dict,
@@ -813,30 +943,19 @@ def get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes):
 def get_mix_pagamento_historico_vendedor(vendedor_id):
     """Média histórica ponderada por modalidade, somando todos os meses em que o
     vendedor tem mix de pagamento lançado (diário e/ou mensal agregado). Retorna
-    (medias_pct_dict, total_com_mix)."""
-    meses_df = pd.read_sql_query(
-        text(
-            """
-            SELECT DISTINCT ano, mes FROM (
-                SELECT EXTRACT(YEAR FROM data)::int AS ano, EXTRACT(MONTH FROM data)::int AS mes
-                FROM pagamentos_diarios WHERE vendedor_id = :vid
-                UNION
-                SELECT ano, mes FROM pagamentos_mensal_manual WHERE vendedor_id = :vid
-            ) t
-            """
-        ),
-        get_engine(),
-        params={"vid": vendedor_id},
-    )
-
-    valores_total = {m: 0.0 for m in MODALIDADES_PAGAMENTO}
-    for _, row in meses_df.iterrows():
-        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, int(row["ano"]), int(row["mes"]))
-        for modalidade in MODALIDADES_PAGAMENTO:
-            valores_total[modalidade] += valores_mes.get(modalidade, 0.0)
-
-    total_geral = sum(valores_total.values())
-    medias_pct = {m: (v / total_geral * 100 if total_geral > 0 else 0.0) for m, v in valores_total.items()}
+    (medias_pct_dict, total_com_mix). Implementado em cima da versão em lote
+    (_mix_pagamento_lote_historico), que resolve o histórico de TODOS os
+    vendedores de uma vez (poucas queries) em vez de uma query por mês por
+    vendedor — aqui só filtramos a linha do vendedor pedido."""
+    lote = _mix_pagamento_lote_historico(loja=None, apenas_ativos=False)
+    linha = lote[lote["vendedor_id"] == vendedor_id]
+    if linha.empty:
+        return {m: 0.0 for m in MODALIDADES_PAGAMENTO}, 0.0
+    row = linha.iloc[0]
+    total_geral = float(row["total_geral"])
+    medias_pct = {
+        m: (float(row[m]) / total_geral * 100 if total_geral > 0 else 0.0) for m in MODALIDADES_PAGAMENTO
+    }
     return medias_pct, total_geral
 
 
@@ -845,18 +964,18 @@ def get_mix_pagamento_mes(ano, mes, loja=None):
     """Combina o mix diário + mensal agregado de TODOS os vendedores do filtro num
     DataFrame "longo" (uma linha por vendedor/modalidade, com o valor em R$), mais a
     soma do realizado que teve mix informado (cobertura em relação ao realizado
-    total do mês)."""
-    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    total do mês). Implementado em cima da versão em lote (_mix_pagamento_lote_mes),
+    que faz sempre ~4 queries no total, não uma por vendedor."""
+    lote = _mix_pagamento_lote_mes(ano, mes, loja=loja, apenas_ativos=True)
     linhas = []
-    realizado_com_mix = 0.0
-    for _, v in vendedores_df.iterrows():
-        valores, total_coberto = get_mix_pagamento_vendedor_mes(int(v["id"]), ano, mes)
-        realizado_com_mix += total_coberto
-        for modalidade, valor in valores.items():
+    realizado_com_mix = float(lote["total_coberto"].sum()) if not lote.empty else 0.0
+    for _, v in lote.iterrows():
+        for modalidade in MODALIDADES_PAGAMENTO:
+            valor = float(v[modalidade])
             if valor == 0.0:
                 continue
             linhas.append({
-                "vendedor_id": int(v["id"]),
+                "vendedor_id": int(v["vendedor_id"]),
                 "nome": v["nome"],
                 "loja": v["loja"],
                 "modalidade": modalidade,
@@ -887,18 +1006,31 @@ def nivel_risco_nota_promissoria(pct):
 def get_risco_nota_promissoria_mes(ano, mes, loja=None):
     """Por vendedor ativo do filtro: exposição em Nota Promissória no mês (R$ e %),
     média histórica (%) de Nota Promissória e nível de risco resultante. Cruza o mix
-    do mês (get_mix_pagamento_vendedor_mes) com todo o histórico já lançado
-    (get_mix_pagamento_historico_vendedor)."""
-    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    do mês com todo o histórico já lançado — ambos calculados em lote
+    (_mix_pagamento_lote_mes / _mix_pagamento_lote_historico), sem loop de query
+    por vendedor."""
+    mes_df = _mix_pagamento_lote_mes(ano, mes, loja=loja, apenas_ativos=True)
+    if mes_df.empty:
+        return pd.DataFrame(columns=[
+            "vendedor_id", "nome", "loja", "valor_np_mes", "total_com_mix_mes",
+            "pct_np_mes", "pct_np_historico", "nivel_risco",
+        ])
+    hist_df = _mix_pagamento_lote_historico(loja=loja, apenas_ativos=True)
+    hist_idx = hist_df.set_index("vendedor_id") if not hist_df.empty else None
+
     linhas = []
-    for _, v in vendedores_df.iterrows():
-        vendedor_id = int(v["id"])
-        valores_mes, total_mes = get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes)
-        valor_np_mes = valores_mes.get("Nota Promissória", 0.0)
+    for _, v in mes_df.iterrows():
+        vendedor_id = int(v["vendedor_id"])
+        valor_np_mes = float(v["Nota Promissória"])
+        total_mes = float(v["total_coberto"])
         pct_np_mes = (valor_np_mes / total_mes * 100) if total_mes > 0 else None
 
-        medias_hist, total_hist = get_mix_pagamento_historico_vendedor(vendedor_id)
-        pct_np_hist = medias_hist.get("Nota Promissória", 0.0) if total_hist > 0 else None
+        pct_np_hist = None
+        if hist_idx is not None and vendedor_id in hist_idx.index:
+            row_hist = hist_idx.loc[vendedor_id]
+            total_hist = float(row_hist["total_geral"])
+            if total_hist > 0:
+                pct_np_hist = float(row_hist["Nota Promissória"]) / total_hist * 100
 
         linhas.append({
             "vendedor_id": vendedor_id,
@@ -972,22 +1104,88 @@ def get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda):
 
 
 @cache_leitura()
+def _inadimplencia_historico_lote(loja=None, apenas_ativos=True):
+    """Versão EM LOTE da série histórica de inadimplência de TODOS os vendedores do
+    filtro (uma linha por vendedor/mês de venda com valor em aberto lançado),
+    evitando uma query de mix de pagamento por vendedor por mês: busca todos os
+    lançamentos de inadimplência de uma vez e resolve o valor a prazo fazendo uma
+    passada por MÊS DISTINTO (não por vendedor) usando _mix_pagamento_lote_mes."""
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=apenas_ativos)
+    cols = ["vendedor_id", "nome", "loja", "ano_venda", "mes_venda", "valor_a_prazo", "valor_em_aberto", "indice_pct"]
+    if vendedores_df.empty:
+        return pd.DataFrame(columns=cols)
+    ids_validos = set(vendedores_df["id"].astype(int))
+    nomes = {int(v["id"]): (v["nome"], v["loja"]) for _, v in vendedores_df.iterrows()}
+
+    df = pd.read_sql_query(
+        text(
+            "SELECT vendedor_id, ano_venda, mes_venda, valor_em_aberto FROM inadimplencia_mensal "
+            "ORDER BY vendedor_id, ano_venda, mes_venda"
+        ),
+        get_engine(),
+    )
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df = df[df["vendedor_id"].astype(int).isin(ids_validos)]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    pares = df[["ano_venda", "mes_venda"]].drop_duplicates()
+    valor_np_lookup = {}
+    for _, p in pares.iterrows():
+        ano_v, mes_v = int(p["ano_venda"]), int(p["mes_venda"])
+        mes_df = _mix_pagamento_lote_mes(ano_v, mes_v, loja=loja, apenas_ativos=apenas_ativos)
+        for _, vr in mes_df.iterrows():
+            valor_np_lookup[(int(vr["vendedor_id"]), ano_v, mes_v)] = float(vr["Nota Promissória"])
+
+    linhas = []
+    for _, r in df.iterrows():
+        vid = int(r["vendedor_id"])
+        ano_v, mes_v = int(r["ano_venda"]), int(r["mes_venda"])
+        valor_a_prazo = valor_np_lookup.get((vid, ano_v, mes_v), 0.0)
+        valor_em_aberto = float(r["valor_em_aberto"])
+        indice_pct = (valor_em_aberto / valor_a_prazo * 100) if valor_a_prazo > 0 else None
+        nome, loja_v = nomes[vid]
+        linhas.append({
+            "vendedor_id": vid, "nome": nome, "loja": loja_v,
+            "ano_venda": ano_v, "mes_venda": mes_v,
+            "valor_a_prazo": valor_a_prazo, "valor_em_aberto": valor_em_aberto,
+            "indice_pct": indice_pct,
+        })
+    return pd.DataFrame(linhas)
+
+
+@cache_leitura()
 def get_inadimplencia_mes(ano_venda, mes_venda, loja=None):
     """Por vendedor ativo do filtro: valor vendido a prazo (Nota Promissória) no mês
-    de venda informado, valor em aberto lançado e o índice de inadimplência (%)."""
+    de venda informado, valor em aberto lançado e o índice de inadimplência (%).
+    Sempre ~2 queries no total (mais o mix em lote do mês), não uma por vendedor."""
     vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    cols = ["vendedor_id", "nome", "loja", "valor_a_prazo", "valor_em_aberto", "indice_pct", "nivel_risco"]
+    if vendedores_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    aberto_df = pd.read_sql_query(
+        text("SELECT vendedor_id, valor_em_aberto FROM inadimplencia_mensal WHERE ano_venda=:ano AND mes_venda=:mes"),
+        get_engine(),
+        params={"ano": ano_venda, "mes": mes_venda},
+    )
+    aberto_lookup = {int(r["vendedor_id"]): float(r["valor_em_aberto"]) for _, r in aberto_df.iterrows()}
+
+    mix_df = _mix_pagamento_lote_mes(ano_venda, mes_venda, loja=loja, apenas_ativos=True)
+    prazo_lookup = {int(r["vendedor_id"]): float(r["Nota Promissória"]) for _, r in mix_df.iterrows()} if not mix_df.empty else {}
+
     linhas = []
     for _, v in vendedores_df.iterrows():
-        vendedor_id = int(v["id"])
-        valor_aberto = get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda)
-        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, ano_venda, mes_venda)
-        valor_a_prazo = valores_mes.get("Nota Promissória", 0.0)
+        vid = int(v["id"])
+        valor_aberto = aberto_lookup.get(vid)
+        valor_a_prazo = prazo_lookup.get(vid, 0.0)
         indice_pct = (
             (valor_aberto / valor_a_prazo * 100)
             if (valor_aberto is not None and valor_a_prazo > 0) else None
         )
         linhas.append({
-            "vendedor_id": vendedor_id,
+            "vendedor_id": vid,
             "nome": v["nome"],
             "loja": v["loja"],
             "valor_a_prazo": valor_a_prazo,
@@ -1002,32 +1200,14 @@ def get_inadimplencia_mes(ano_venda, mes_venda, loja=None):
 def get_inadimplencia_historico_vendedor(vendedor_id):
     """Série histórica (uma linha por mês de venda com valor em aberto lançado) do
     vendedor: valor vendido a prazo, valor em aberto e o índice de inadimplência (%)
-    de cada mês, ordenada cronologicamente — base para calcular tendência."""
-    df = pd.read_sql_query(
-        text(
-            "SELECT ano_venda, mes_venda, valor_em_aberto FROM inadimplencia_mensal "
-            "WHERE vendedor_id=:vid ORDER BY ano_venda, mes_venda"
-        ),
-        get_engine(),
-        params={"vid": vendedor_id},
-    )
-    if df.empty:
-        return pd.DataFrame(columns=["ano_venda", "mes_venda", "valor_a_prazo", "valor_em_aberto", "indice_pct"])
-
-    linhas = []
-    for _, r in df.iterrows():
-        valores_mes, _ = get_mix_pagamento_vendedor_mes(vendedor_id, int(r["ano_venda"]), int(r["mes_venda"]))
-        valor_a_prazo = valores_mes.get("Nota Promissória", 0.0)
-        valor_em_aberto = float(r["valor_em_aberto"])
-        indice_pct = (valor_em_aberto / valor_a_prazo * 100) if valor_a_prazo > 0 else None
-        linhas.append({
-            "ano_venda": int(r["ano_venda"]),
-            "mes_venda": int(r["mes_venda"]),
-            "valor_a_prazo": valor_a_prazo,
-            "valor_em_aberto": valor_em_aberto,
-            "indice_pct": indice_pct,
-        })
-    return pd.DataFrame(linhas)
+    de cada mês, ordenada cronologicamente — base para calcular tendência.
+    Implementado em cima da versão em lote (_inadimplencia_historico_lote)."""
+    hist = _inadimplencia_historico_lote(loja=None, apenas_ativos=False)
+    cols = ["ano_venda", "mes_venda", "valor_a_prazo", "valor_em_aberto", "indice_pct"]
+    if hist.empty:
+        return pd.DataFrame(columns=cols)
+    sub = hist[hist["vendedor_id"] == vendedor_id][cols].sort_values(["ano_venda", "mes_venda"])
+    return sub.reset_index(drop=True)
 
 
 @cache_leitura()
@@ -1055,6 +1235,43 @@ def get_indice_inadimplencia_resumo_vendedor(vendedor_id):
         "nivel_risco": nivel_risco_inadimplencia(media_pct),
         "historico": hist,
     }
+
+
+@cache_leitura()
+def get_indice_inadimplencia_resumo_todos_vendedores(loja=None):
+    """Versão EM LOTE de get_indice_inadimplencia_resumo_vendedor para todos os
+    vendedores ativos do filtro de uma vez — usada no Dashboard para não fazer um
+    loop de query por vendedor. Retorna um dict {vendedor_id: {..., "historico":
+    DataFrame, "nome": str, "loja": str}}."""
+    hist_todos = _inadimplencia_historico_lote(loja=loja, apenas_ativos=True)
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)
+    cols = ["ano_venda", "mes_venda", "valor_a_prazo", "valor_em_aberto", "indice_pct"]
+    resultado = {}
+    for _, v in vendedores_df.iterrows():
+        vid = int(v["id"])
+        if not hist_todos.empty:
+            hist_v = hist_todos[hist_todos["vendedor_id"] == vid][cols].sort_values(["ano_venda", "mes_venda"]).reset_index(drop=True)
+        else:
+            hist_v = pd.DataFrame(columns=cols)
+
+        hist_valida = hist_v[hist_v["valor_a_prazo"] > 0] if not hist_v.empty else hist_v
+        if hist_valida.empty:
+            media_pct, n_meses = None, 0
+        else:
+            total_prazo = float(hist_valida["valor_a_prazo"].sum())
+            total_aberto = float(hist_valida["valor_em_aberto"].sum())
+            media_pct = (total_aberto / total_prazo * 100) if total_prazo > 0 else None
+            n_meses = int(len(hist_valida))
+
+        resultado[vid] = {
+            "nome": v["nome"],
+            "loja": v["loja"],
+            "media_ponderada_pct": media_pct,
+            "n_meses": n_meses,
+            "nivel_risco": nivel_risco_inadimplencia(media_pct),
+            "historico": hist_v,
+        }
+    return resultado
 
 
 # --------------------------------------------------------------------------

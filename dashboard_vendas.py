@@ -1852,7 +1852,7 @@ with tab_dashboard:
     else:
         st.caption(
             f"📊 Cobertura: {db.formatar_moeda(realizado_com_mix)} de "
-            f"{db.formatar_moeda(realizado_total)} do realizado do mês têm mix de pagamento "
+            f"{db.formatar_moeda(realizado_total_mix)} do realizado do mês têm mix de pagamento "
             f"informado ({cobertura_pct:.1f}%)."
         )
 
@@ -1981,8 +1981,8 @@ with tab_dashboard:
         f"🔴 Alto (> {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%)."
     )
 
-    st.markdown(f"##### Vendas de {db.MESES_PT[mes_filtro]}/{ano_filtro}")
-    inadimp_mes_df = db.get_inadimplencia_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    st.markdown(f"##### Vendas de {db.MESES_PT[mes_mix]}/{ano_mix} (mês anterior)")
+    inadimp_mes_df = db.get_inadimplencia_mes(ano_mix, mes_mix, loja=loja_filtro)
     if inadimp_mes_df.empty:
         st.info("Nenhum vendedor ativo no filtro selecionado.")
     else:
@@ -1990,7 +1990,7 @@ with tab_dashboard:
         com_prazo_sem_dado = sem_dado_ina[sem_dado_ina["valor_a_prazo"] > 0]
         if not com_prazo_sem_dado.empty:
             st.caption(
-                "ℹ️ Venderam a prazo neste mês mas ainda sem valor em aberto lançado: "
+                "ℹ️ Venderam a prazo nesse mês mas ainda sem valor em aberto lançado: "
                 + ", ".join(com_prazo_sem_dado["nome"].tolist())
             )
 
@@ -2011,9 +2011,14 @@ with tab_dashboard:
         )
 
     st.markdown("##### Série histórica, tendência e correção do risco por vendedor")
+    resumo_ina_todos = db.get_indice_inadimplencia_resumo_todos_vendedores(loja=loja_filtro)
+    mix_np_lookup = (
+        mix_df[mix_df["modalidade"] == "Nota Promissória"].set_index("vendedor_id")["valor"].to_dict()
+        if not mix_df.empty else {}
+    )
+
     linhas_resumo_inadimp = []
-    for row in indicadores_atual.itertuples():
-        resumo_ina = db.get_indice_inadimplencia_resumo_vendedor(row.vendedor_id)
+    for vid, resumo_ina in resumo_ina_todos.items():
         hist_ina = resumo_ina["historico"]
         hist_valida_ina = hist_ina[hist_ina["indice_pct"].notna()] if not hist_ina.empty else hist_ina
 
@@ -2023,16 +2028,15 @@ with tab_dashboard:
             ys_ina = hist_valida_ina["indice_pct"].to_numpy(dtype=float)
             slope_ina = float(np.polyfit(xs_ina, ys_ina, 1)[0])
 
-        valores_mes_atual_ina, _ = db.get_mix_pagamento_vendedor_mes(row.vendedor_id, ano_filtro, mes_filtro)
-        valor_a_prazo_atual = valores_mes_atual_ina.get("Nota Promissória", 0.0)
+        valor_a_prazo_atual = float(mix_np_lookup.get(vid, 0.0))
         valor_esperado_perda = (
             valor_a_prazo_atual * resumo_ina["media_ponderada_pct"] / 100
             if resumo_ina["media_ponderada_pct"] is not None else None
         )
 
         linhas_resumo_inadimp.append({
-            "nome": row.nome,
-            "loja": row.loja,
+            "nome": resumo_ina["nome"],
+            "loja": resumo_ina["loja"],
             "media_historica_pct": resumo_ina["media_ponderada_pct"],
             "n_meses": resumo_ina["n_meses"],
             "slope": slope_ina,
@@ -2060,14 +2064,14 @@ with tab_dashboard:
                 + ("📈 piorando" if v > 0.5 else ("📉 melhorando" if v < -0.5 else "➡️ estável"))
             ) if v is not None else "—"
         )
-        resumo_fmt_ina["Valor a Prazo (mês atual)"] = resumo_fmt_ina["valor_a_prazo_atual"].apply(db.formatar_moeda)
+        resumo_fmt_ina["Valor a Prazo (mês anterior)"] = resumo_fmt_ina["valor_a_prazo_atual"].apply(db.formatar_moeda)
         resumo_fmt_ina["Valor Esperado em Risco"] = resumo_fmt_ina["valor_esperado_perda"].apply(
             lambda v: db.formatar_moeda(v) if v is not None else "—"
         )
         st.dataframe(
             resumo_fmt_ina[
                 ["nome", "loja", "Média Histórica (%)", "Meses com Dado", "Tendência",
-                 "nivel_risco", "Valor a Prazo (mês atual)", "Valor Esperado em Risco"]
+                 "nivel_risco", "Valor a Prazo (mês anterior)", "Valor Esperado em Risco"]
             ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
             use_container_width=True,
             hide_index=True,
@@ -2077,7 +2081,7 @@ with tab_dashboard:
             "o valor vendido a prazo (ponderada por R$ — mais justa que a média simples dos "
             "meses). Tendência = inclinação da regressão linear do índice mensal ao longo do "
             "tempo (precisa de pelo menos 3 meses com dado). Valor Esperado em Risco = valor "
-            "vendido a prazo no mês do filtro atual × a média histórica de inadimplência do "
+            "vendido a prazo no mês anterior ao filtro × a média histórica de inadimplência do "
             "próprio vendedor — é a correção do risco de Nota Promissória com base no "
             "comportamento real de pagamento de cada um, não só na exposição bruta."
         )
