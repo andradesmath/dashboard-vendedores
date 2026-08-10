@@ -1351,6 +1351,8 @@ with tab_dashboard:
             .apply(lambda g: g["realizado"].sum() / g["pedidos"].sum() if g["pedidos"].sum() > 0 else 0.0)
         )
 
+        resumo_ina_lookup_avancado = db.get_indice_inadimplencia_resumo_todos_vendedores(loja=loja_filtro)
+
         linhas_avancado = []
         for row in indicadores_atual.itertuples():
             dados_vend = vendas_df[vendas_df["vendedor_id"] == row.vendedor_id]
@@ -1975,10 +1977,27 @@ with tab_dashboard:
     st.caption(
         "Cruza o valor vendido a prazo (Nota Promissória) de cada mês com o valor em "
         "aberto lançado para esse mesmo mês de venda (aba Metas → 'Valores em aberto'). "
-        "Índice = valor em aberto ÷ valor vendido a prazo. Faixas: 🟢 Baixo "
-        f"(< {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
-        f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
-        f"🔴 Alto (> {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%)."
+        "Índice = valor em aberto ÷ valor vendido a prazo. Referência: "
+        f"{db.INADIMPLENCIA_LIMIAR_ACEITAVEL:.0f}% é a taxa cobrada pela maquininha de cartão — "
+        f"até esse índice (🟢 Aceitável), o atraso fica dentro do custo que o negócio já "
+        f"absorve normalmente. Acima disso (🔴 Muito alto), a inadimplência está custando "
+        "mais do que a maquininha custaria."
+    )
+
+    st.markdown("##### Índice de Inadimplência Histórico por Loja")
+    indice_lojas = db.get_indice_inadimplencia_geral_loja()
+
+    def _fmt_indice_loja(d):
+        return f"{d['media_ponderada_pct']:.1f}%" if d["media_ponderada_pct"] is not None else "—"
+
+    col_il1, col_il2, col_il3 = st.columns(3)
+    kpi_card(col_il1, f"Porteira — {indice_lojas['Porteira']['nivel_risco']}", _fmt_indice_loja(indice_lojas["Porteira"]))
+    kpi_card(col_il2, f"Casa de Adubo — {indice_lojas['Casa de Adubo']['nivel_risco']}", _fmt_indice_loja(indice_lojas["Casa de Adubo"]))
+    kpi_card(col_il3, f"Geral (ambas as lojas) — {indice_lojas['Geral']['nivel_risco']}", _fmt_indice_loja(indice_lojas["Geral"]))
+    st.caption(
+        "Índice histórico ponderado por R$ de cada loja: soma de todo o valor em aberto já "
+        "lançado ÷ soma de todo o valor vendido a prazo, considerando todos os vendedores "
+        "ativos da loja."
     )
 
     st.markdown(f"##### Vendas de {db.MESES_PT[mes_mix]}/{ano_mix} (mês anterior)")
@@ -2049,12 +2068,12 @@ with tab_dashboard:
     if resumo_inadimp_df.empty:
         st.info("Sem vendedores no filtro selecionado.")
     else:
-        ordem_risco_ina = {"🔴 Alto": 0, "🟡 Moderado": 1, "🟢 Baixo": 2, "— sem dado": 3}
-        resumo_inadimp_df["_ordem"] = resumo_inadimp_df["nivel_risco"].map(ordem_risco_ina).fillna(3)
+        ordem_risco_ina = {"🔴 Muito alto": 0, "🟢 Aceitável": 1, "— sem dado": 2}
+        resumo_inadimp_df["_ordem"] = resumo_inadimp_df["nivel_risco"].map(ordem_risco_ina).fillna(2)
         resumo_inadimp_df = resumo_inadimp_df.sort_values("_ordem")
 
         resumo_fmt_ina = resumo_inadimp_df.copy()
-        resumo_fmt_ina["Média Histórica (%)"] = resumo_fmt_ina["media_historica_pct"].apply(
+        resumo_fmt_ina["Índice de Inadimplência Histórico"] = resumo_fmt_ina["media_historica_pct"].apply(
             lambda v: f"{v:.1f}%" if v is not None else "—"
         )
         resumo_fmt_ina["Meses com Dado"] = resumo_fmt_ina["n_meses"]
@@ -2070,14 +2089,14 @@ with tab_dashboard:
         )
         st.dataframe(
             resumo_fmt_ina[
-                ["nome", "loja", "Média Histórica (%)", "Meses com Dado", "Tendência",
+                ["nome", "loja", "Índice de Inadimplência Histórico", "Meses com Dado", "Tendência",
                  "nivel_risco", "Valor a Prazo (mês anterior)", "Valor Esperado em Risco"]
             ].rename(columns={"nome": "Nome", "loja": "Loja", "nivel_risco": "Nível de Risco"}),
             use_container_width=True,
             hide_index=True,
         )
         st.caption(
-            "Média Histórica (%) = soma de todo o valor em aberto já lançado ÷ soma de todo "
+            "Índice de Inadimplência Histórico (%) = soma de todo o valor em aberto já lançado ÷ soma de todo "
             "o valor vendido a prazo (ponderada por R$ — mais justa que a média simples dos "
             "meses). Tendência = inclinação da regressão linear do índice mensal ao longo do "
             "tempo (precisa de pelo menos 3 meses com dado). Valor Esperado em Risco = valor "

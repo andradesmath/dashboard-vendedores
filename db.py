@@ -1054,19 +1054,20 @@ def get_risco_nota_promissoria_mes(ano, mes, loja=None):
 # valor vendido em Nota Promissória (já rastreado no mix de pagamento) chegamos
 # ao índice de inadimplência (%) = valor em aberto ÷ valor vendido a prazo.
 # --------------------------------------------------------------------------
-INADIMPLENCIA_LIMIAR_BAIXO = 3.0
-INADIMPLENCIA_LIMIAR_MODERADO = 8.0
+# Referência: 7% é a taxa cobrada pela maquininha de cartão — até esse índice, o
+# atraso fica dentro do custo que o negócio já absorve normalmente. Acima disso, o
+# índice de inadimplência é considerado muito alto.
+INADIMPLENCIA_LIMIAR_ACEITAVEL = 7.0
 
 
 def nivel_risco_inadimplencia(pct):
-    """Classifica o índice de inadimplência (%) em Baixo/Moderado/Alto risco."""
+    """Classifica o índice de inadimplência (%): até o limiar aceitável (taxa da
+    maquininha de cartão) ou muito alto acima dele."""
     if pct is None:
         return "— sem dado"
-    if pct < INADIMPLENCIA_LIMIAR_BAIXO:
-        return "🟢 Baixo"
-    elif pct <= INADIMPLENCIA_LIMIAR_MODERADO:
-        return "🟡 Moderado"
-    return "🔴 Alto"
+    if pct <= INADIMPLENCIA_LIMIAR_ACEITAVEL:
+        return "🟢 Aceitável"
+    return "🔴 Muito alto"
 
 
 def upsert_inadimplencia(vendedor_id, ano_venda, mes_venda, valor_em_aberto):
@@ -1271,6 +1272,37 @@ def get_indice_inadimplencia_resumo_todos_vendedores(loja=None):
             "nivel_risco": nivel_risco_inadimplencia(media_pct),
             "historico": hist_v,
         }
+    return resultado
+
+
+@cache_leitura()
+def get_indice_inadimplencia_geral_loja():
+    """Índice de inadimplência histórico agregado por loja: soma de todo o valor em
+    aberto já lançado ÷ soma de todo o valor vendido a prazo, considerando TODOS os
+    vendedores ativos de cada loja (ponderado por R$, mesma lógica do índice por
+    vendedor) — mais um índice "Geral" com as duas lojas juntas. Retorna
+    {"Porteira": {...}, "Casa de Adubo": {...}, "Geral": {...}}, cada valor com
+    media_ponderada_pct, n_meses e nivel_risco."""
+    hist = _inadimplencia_historico_lote(loja=None, apenas_ativos=True)
+    hist_valida = hist[hist["valor_a_prazo"] > 0] if not hist.empty else hist
+
+    def _resumo(sub):
+        if sub.empty:
+            return {"media_ponderada_pct": None, "n_meses": 0, "nivel_risco": nivel_risco_inadimplencia(None)}
+        total_prazo = float(sub["valor_a_prazo"].sum())
+        total_aberto = float(sub["valor_em_aberto"].sum())
+        media_pct = (total_aberto / total_prazo * 100) if total_prazo > 0 else None
+        return {
+            "media_ponderada_pct": media_pct,
+            "n_meses": int(len(sub)),
+            "nivel_risco": nivel_risco_inadimplencia(media_pct),
+        }
+
+    resultado = {}
+    for loja in LOJAS:
+        sub_loja = hist_valida[hist_valida["loja"] == loja] if not hist_valida.empty else hist_valida
+        resultado[loja] = _resumo(sub_loja)
+    resultado["Geral"] = _resumo(hist_valida)
     return resultado
 
 

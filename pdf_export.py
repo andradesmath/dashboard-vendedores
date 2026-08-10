@@ -429,10 +429,11 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
             "dispersão e menos meses de dado, menos confiável é usar a média como previsão. "
             "Tendência = inclinação da regressão linear do índice mensal (mín. 3 meses). "
             "Risco atual estimado = índice histórico ajustado pela tendência (projeção de um "
-            f"mês à frente), não a média 'congelada'. Faixas de risco: 🟢 Baixo "
-            f"(&lt; {db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
-            f"({db.INADIMPLENCIA_LIMIAR_BAIXO:.0f}–{db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%), "
-            f"🔴 Alto (&gt; {db.INADIMPLENCIA_LIMIAR_MODERADO:.0f}%).",
+            "mês à frente), não a média 'congelada'. Referência de risco: "
+            f"{db.INADIMPLENCIA_LIMIAR_ACEITAVEL:.0f}% é a taxa cobrada pela maquininha de "
+            f"cartão — até esse índice (🟢 Aceitável) o atraso fica dentro do custo que o "
+            f"negócio já absorve normalmente; acima disso (🔴 Muito alto) a inadimplência "
+            "está custando mais do que a maquininha custaria.",
             sub_style,
         ))
         elementos.append(Spacer(1, 0.3 * cm))
