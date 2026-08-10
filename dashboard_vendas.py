@@ -1832,15 +1832,20 @@ with tab_dashboard:
     st.markdown("---")
 
     # ---- Mix de Pagamento ----
-    st.markdown("### 💳 Mix de Pagamento")
+    ano_mix, mes_mix = db.mes_anterior(ano_filtro, mes_filtro)
+    st.markdown(f"### 💳 Mix de Pagamento — {db.MESES_PT[mes_mix]}/{ano_mix}")
     st.caption(
-        "Percentual do realizado por modalidade de pagamento, calculado a partir dos "
-        "lançamentos diários e/ou mensais de mix informados (aba Lançamentos Diários / "
-        "aba Metas). Cobre só a parte do realizado que já tem mix de pagamento lançado."
+        "Percentual do realizado por modalidade de pagamento, calculado a partir do mix "
+        "mensal informado (aba Metas → 'Mix de pagamento do mês'). Abordagem mensal: "
+        "mostra sempre o mês ANTERIOR ao selecionado no filtro acima, já que o mix só é "
+        "lançado depois que o mês fecha. Cobre só a parte do realizado que já tem mix de "
+        "pagamento lançado."
     )
 
-    mix_df, realizado_com_mix = db.get_mix_pagamento_mes(ano_filtro, mes_filtro, loja=loja_filtro)
-    cobertura_pct = (realizado_com_mix / realizado_total * 100) if realizado_total > 0 else 0.0
+    mix_df, realizado_com_mix = db.get_mix_pagamento_mes(ano_mix, mes_mix, loja=loja_filtro)
+    totais_mix = db.get_totais_mes(ano_mix, mes_mix, loja=loja_filtro)
+    realizado_total_mix = totais_mix["realizado"]
+    cobertura_pct = (realizado_com_mix / realizado_total_mix * 100) if realizado_total_mix > 0 else 0.0
 
     if mix_df.empty:
         st.info("Nenhum mix de pagamento lançado ainda para o filtro selecionado.")
