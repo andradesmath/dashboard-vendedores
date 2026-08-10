@@ -844,48 +844,6 @@ with tab_lancamentos:
                 st.rerun()
 
     st.markdown("---")
-    st.subheader("💳 Lançar mix de pagamento do dia")
-    st.caption(
-        "Valor em R$ de cada modalidade nas vendas do dia (precisa que o valor vendido "
-        "do dia já esteja lançado acima). O percentual de cada modalidade é calculado "
-        "automaticamente a partir da soma informada."
-    )
-    if vendedores_df.empty:
-        st.caption("Cadastre vendedores na aba 'Cadastros' primeiro.")
-    else:
-        with st.form("form_pagamento_dia", clear_on_submit=False):
-            colpg1, colpg2 = st.columns(2)
-            opcoes_vend_pgd = {
-                f"{row['nome']} ({row['loja']})": row["id"] for _, row in vendedores_df.iterrows()
-            }
-            with colpg1:
-                escolha_vend_pgd = st.selectbox("Vendedor *", list(opcoes_vend_pgd.keys()), key="sel_pgto_dia")
-            with colpg2:
-                data_pgto_dia = st.date_input(
-                    "Data *", value=date.today(), max_value=date.today(), key="data_pgto_dia"
-                )
-
-            percentuais_dia, soma_dia = campos_mix_pagamento("pgto_dia")
-            st.caption(
-                f"Soma informada: {db.formatar_moeda(soma_dia)} — essa soma vira a base de "
-                "100% para calcular o percentual de cada modalidade (não precisa bater com o "
-                "valor vendido do dia até o centavo, só refletir a proporção certa)."
-            )
-
-            enviado_pgto_dia = st.form_submit_button("💾 Salvar mix de pagamento do dia")
-            if enviado_pgto_dia:
-                if soma_dia <= 0:
-                    st.error("Informe pelo menos um valor em R$ maior que zero.")
-                else:
-                    vendedor_id_pgd = opcoes_vend_pgd[escolha_vend_pgd]
-                    db.upsert_pagamento_dia(vendedor_id_pgd, data_pgto_dia, percentuais_dia)
-                    st.success(
-                        f"Mix de pagamento salvo: {escolha_vend_pgd} — {data_pgto_dia.strftime('%d/%m/%Y')}."
-                    )
-                    st.session_state.versao_dados += 1
-                    st.rerun()
-
-    st.markdown("---")
     with st.expander("📥 Importar vendas diárias em lote (sem pedidos)"):
         st.caption(
             "Cole uma linha por lançamento, no formato: Vendedor [TAB] Data (DD/MM/AAAA) [TAB] "
@@ -1942,17 +1900,23 @@ with tab_dashboard:
     st.markdown("---")
 
     # ---- Risco de Nota Promissória ----
-    st.markdown("### ⚠️ Risco de Nota Promissória")
+    ano_risco_np, mes_risco_np = db.mes_anterior(ano_filtro, mes_filtro)
+    st.markdown(
+        f"### ⚠️ Risco de Nota Promissória — {db.MESES_PT[mes_risco_np]}/{ano_risco_np}"
+    )
     st.caption(
         "Nota promissória aumenta o risco da venda (recebimento não garantido no ato). "
-        "Exposição = % do realizado com mix informado que foi vendido em nota promissória. "
-        f"Faixas: 🟢 Baixo (< {db.RISCO_NP_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
+        "Abordagem mensal: mostra sempre o mês ANTERIOR ao selecionado no filtro acima "
+        "— o mix de pagamento de um mês só é lançado depois que ele fecha, então usar o "
+        "mês corrente aqui normalmente viria vazio. Exposição = % do realizado com mix "
+        "informado que foi vendido em nota promissória naquele mês. Faixas: 🟢 Baixo "
+        f"(< {db.RISCO_NP_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
         f"({db.RISCO_NP_LIMIAR_BAIXO:.0f}–{db.RISCO_NP_LIMIAR_MODERADO:.0f}%), 🔴 Alto "
         f"(> {db.RISCO_NP_LIMIAR_MODERADO:.0f}%). Comparado com a média histórica do próprio "
         "vendedor para sinalizar se a exposição está piorando."
     )
 
-    risco_np_df = db.get_risco_nota_promissoria_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    risco_np_df = db.get_risco_nota_promissoria_mes(ano_risco_np, mes_risco_np, loja=loja_filtro)
 
     if risco_np_df.empty:
         st.info("Nenhum vendedor ativo no filtro selecionado.")
@@ -1962,7 +1926,7 @@ with tab_dashboard:
         pct_np_loja = (valor_np_total / total_com_mix_total * 100) if total_com_mix_total > 0 else None
 
         col_np1, col_np2, col_np3 = st.columns(3)
-        kpi_card(col_np1, "Exposição em Nota Promissória (mês)", db.formatar_moeda(valor_np_total))
+        kpi_card(col_np1, "Exposição em Nota Promissória (mês anterior)", db.formatar_moeda(valor_np_total))
         kpi_card(
             col_np2, "% do Realizado (com mix) em Nota Promissória",
             f"{pct_np_loja:.1f}%" if pct_np_loja is not None else "—",

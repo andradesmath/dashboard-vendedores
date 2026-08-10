@@ -64,6 +64,15 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
             "media_historica_pct": mix_hist_pct.get(modalidade, 0.0),
         })
 
+    # Risco de Nota Promissória: abordagem mensal considerando sempre o mês ANTERIOR
+    # ao do relatório — o mix de pagamento de um mês só é lançado depois que ele
+    # fecha, então usar o mês do próprio relatório aqui normalmente viria vazio.
+    ano_np, mes_np = db.mes_anterior(ano, mes)
+    mix_np_valores, mix_np_total = db.get_mix_pagamento_vendedor_mes(vendedor_id, ano_np, mes_np)
+    pct_np_mes_anterior = (
+        (mix_np_valores.get("Nota Promissória", 0.0) / mix_np_total * 100) if mix_np_total > 0 else None
+    )
+
     return {
         "meta": meta,
         "realizado": realizado,
@@ -78,9 +87,9 @@ def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
         "mix_pagamento": mix_pagamento,
         "mix_mes_total": mix_mes_total,
         "mix_hist_total": mix_hist_total,
-        "pct_np_mes": next(
-            (l["pct_mes"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
-        ) if mix_mes_total > 0 else None,
+        "ano_np": ano_np,
+        "mes_np": mes_np,
+        "pct_np_mes": pct_np_mes_anterior,
         "pct_np_historico": next(
             (l["media_historica_pct"] for l in mix_pagamento if l["modalidade"] == "Nota Promissória"), 0.0
         ) if mix_hist_total > 0 else None,
@@ -312,13 +321,15 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
             backColor=colors.HexColor("#fff3e0"), borderPadding=6,
         )
         elementos.append(Paragraph(
-            f"⚠️ Risco de Nota Promissória: {kpis['pct_np_mes']:.1f}% do realizado do mês "
-            f"({nivel_risco}){variacao_np_txt}",
+            f"⚠️ Risco de Nota Promissória ({db.MESES_PT[kpis['mes_np']]}/{kpis['ano_np']}): "
+            f"{kpis['pct_np_mes']:.1f}% do realizado do mês ({nivel_risco}){variacao_np_txt}",
             risco_estilo,
         ))
         elementos.append(Spacer(1, 0.15 * cm))
         elementos.append(Paragraph(
-            f"Metodologia: % do realizado do mês vendido em Nota Promissória. Faixas: "
+            "Metodologia: abordagem mensal, sempre referente ao mês ANTERIOR ao do "
+            "relatório (o mix de pagamento só é lançado depois que o mês fecha). % do "
+            "realizado desse mês vendido em Nota Promissória. Faixas: "
             f"🟢 Baixo (&lt; {db.RISCO_NP_LIMIAR_BAIXO:.0f}%), 🟡 Moderado "
             f"({db.RISCO_NP_LIMIAR_BAIXO:.0f}–{db.RISCO_NP_LIMIAR_MODERADO:.0f}%), "
             f"🔴 Alto (&gt; {db.RISCO_NP_LIMIAR_MODERADO:.0f}%).",
