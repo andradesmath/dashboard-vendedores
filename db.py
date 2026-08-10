@@ -50,6 +50,38 @@ COLUNAS_PAGAMENTO = {
 }
 
 
+# --------------------------------------------------------------------------
+# Cache de leitura (performance). O painel cresceu bastante em número de
+# indicadores e várias funções fazem várias consultas por vendedor (ex.:
+# histórico de mix de pagamento, índice de inadimplência) — sem cache, o
+# Streamlit reexecuta TODAS as consultas de TODAS as seções a cada interação
+# na página (clique, filtro, etc.), o que fica lento rápido conforme o
+# histórico de meses e o número de vendedores crescem.
+#
+# `@cache_leitura()` usa st.cache_data quando o Streamlit está disponível
+# (é um no-op fora do Streamlit, ex.: seed_data.py, scripts de importação) e
+# guarda o resultado por um tempo limite (TTL) como rede de segurança. Toda
+# função que grava dado (upsert_*, add_vendedor, delete_*) chama
+# `limpar_cache()` no final, o que invalida IMEDIATAMENTE tudo que estiver em
+# cache — garante que a tela sempre mostra o dado atualizado logo após salvar,
+# sem esperar o TTL expirar.
+# --------------------------------------------------------------------------
+def cache_leitura(ttl=600):
+    try:
+        import streamlit as st
+        return st.cache_data(ttl=ttl, show_spinner=False)
+    except Exception:
+        return lambda func: func
+
+
+def limpar_cache():
+    try:
+        import streamlit as st
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
 def get_database_url():
     url = os.environ.get("DATABASE_URL")
     if url:
@@ -239,6 +271,7 @@ def add_vendedor(nome, loja):
             text("INSERT INTO vendedores (nome, loja) VALUES (:nome, :loja)"),
             {"nome": nome, "loja": loja},
         )
+    limpar_cache()
 
 
 def update_vendedor(vendedor_id, nome, loja, ativo=True):
@@ -249,13 +282,16 @@ def update_vendedor(vendedor_id, nome, loja, ativo=True):
             ),
             {"nome": nome, "loja": loja, "ativo": bool(ativo), "id": vendedor_id},
         )
+    limpar_cache()
 
 
 def delete_vendedor(vendedor_id):
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM vendedores WHERE id=:id"), {"id": vendedor_id})
+    limpar_cache()
 
 
+@cache_leitura()
 def get_vendedores(loja=None, apenas_ativos=False):
     query = "SELECT * FROM vendedores WHERE 1=1"
     params = {}
@@ -268,6 +304,7 @@ def get_vendedores(loja=None, apenas_ativos=False):
     return pd.read_sql_query(text(query), get_engine(), params=params)
 
 
+@cache_leitura()
 def get_vendedor(vendedor_id):
     df = pd.read_sql_query(
         text("SELECT * FROM vendedores WHERE id = :id"), get_engine(), params={"id": vendedor_id}
@@ -291,8 +328,10 @@ def upsert_meta(vendedor_id, ano, mes, valor_meta):
             ),
             {"vendedor_id": vendedor_id, "ano": ano, "mes": mes, "valor_meta": valor_meta},
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_meta_vendedor(vendedor_id, ano, mes):
     df = pd.read_sql_query(
         text("SELECT valor_meta FROM metas WHERE vendedor_id=:vid AND ano=:ano AND mes=:mes"),
@@ -302,6 +341,7 @@ def get_meta_vendedor(vendedor_id, ano, mes):
     return float(df.iloc[0]["valor_meta"]) if not df.empty else 0.0
 
 
+@cache_leitura()
 def get_metas_historico(loja=None):
     query = """
         SELECT m.id, v.id as vendedor_id, v.nome, v.loja, m.ano, m.mes, m.valor_meta
@@ -316,6 +356,7 @@ def get_metas_historico(loja=None):
     return pd.read_sql_query(text(query), get_engine(), params=params)
 
 
+@cache_leitura()
 def get_historico_meta_realizado(loja=None):
     """Histórico por vendedor/mês combinando meta lançada com o realizado somado a
     partir das vendas diárias + realizado manual importado (inclui meses com venda
@@ -371,6 +412,7 @@ def get_historico_meta_realizado(loja=None):
     return df
 
 
+@cache_leitura()
 def get_metas_mes(ano, mes, loja=None):
     """Uma linha por vendedor ativo, com valor_meta = 0 quando não houver meta lançada."""
     query = """
@@ -412,6 +454,7 @@ def upsert_venda(vendedor_id, data_venda, valor_realizado, qtd_pedidos):
                 "qtd_pedidos": qtd_pedidos,
             },
         )
+    limpar_cache()
 
 
 def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
@@ -430,6 +473,7 @@ def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "valor_realizado": valor_realizado},
         )
+    limpar_cache()
 
 
 def upsert_pedidos_dia(vendedor_id, data_venda, qtd_pedidos):
@@ -448,13 +492,16 @@ def upsert_pedidos_dia(vendedor_id, data_venda, qtd_pedidos):
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "qtd_pedidos": qtd_pedidos},
         )
+    limpar_cache()
 
 
 def delete_venda(venda_id):
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM vendas_diarias WHERE id=:id"), {"id": venda_id})
+    limpar_cache()
 
 
+@cache_leitura()
 def get_vendas_mes(ano, mes, loja=None):
     ini = date(ano, mes, 1)
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -476,6 +523,7 @@ def get_vendas_mes(ano, mes, loja=None):
     return df
 
 
+@cache_leitura()
 def get_vendas_vendedor_mes(vendedor_id, ano, mes):
     ini = date(ano, mes, 1)
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -494,6 +542,7 @@ def get_vendas_vendedor_mes(vendedor_id, ano, mes):
     return df
 
 
+@cache_leitura()
 def get_lancamentos_recentes(limite=30, loja=None):
     query = """
         SELECT vd.id, v.nome, v.loja, vd.data, vd.valor_realizado, vd.qtd_pedidos
@@ -528,8 +577,10 @@ def upsert_realizado_mensal(vendedor_id, ano, mes, valor_realizado):
             ),
             {"vendedor_id": vendedor_id, "ano": ano, "mes": mes, "valor_realizado": valor_realizado},
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_realizado_manual_mes(ano, mes, loja=None):
     query = """
         SELECT rm.vendedor_id, v.nome, v.loja, rm.valor_realizado
@@ -547,6 +598,7 @@ def get_realizado_manual_mes(ano, mes, loja=None):
     return df
 
 
+@cache_leitura()
 def get_realizado_manual_vendedor(vendedor_id, ano, mes):
     df = pd.read_sql_query(
         text(
@@ -576,8 +628,10 @@ def upsert_pedidos_mensal(vendedor_id, ano, mes, qtd_pedidos):
             ),
             {"vendedor_id": vendedor_id, "ano": ano, "mes": mes, "qtd_pedidos": qtd_pedidos},
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_pedidos_manual_mes(ano, mes, loja=None):
     query = """
         SELECT cm.vendedor_id, v.nome, v.loja, cm.qtd_pedidos
@@ -595,6 +649,7 @@ def get_pedidos_manual_mes(ano, mes, loja=None):
     return df
 
 
+@cache_leitura()
 def get_pedidos_manual_vendedor(vendedor_id, ano, mes):
     df = pd.read_sql_query(
         text(
@@ -632,8 +687,10 @@ def upsert_pagamento_dia(vendedor_id, data_venda, percentuais):
             ),
             params,
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_pagamento_dia_vendedor(vendedor_id, data_venda):
     """Retorna o dict de percentuais já lançados para o vendedor/dia, ou None."""
     data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
@@ -667,8 +724,10 @@ def upsert_pagamento_mensal(vendedor_id, ano, mes, percentuais):
             ),
             params,
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_pagamento_manual_vendedor(vendedor_id, ano, mes):
     """Retorna o dict de percentuais já lançados (manual mensal) para o vendedor/mês, ou None."""
     colunas = list(COLUNAS_PAGAMENTO.values())
@@ -686,6 +745,7 @@ def get_pagamento_manual_vendedor(vendedor_id, ano, mes):
     return {modalidade: float(row[coluna]) for modalidade, coluna in COLUNAS_PAGAMENTO.items()}
 
 
+@cache_leitura()
 def _mix_diario_vendedor_periodo(vendedor_id, ini=None, fim=None):
     """Soma, por modalidade, o valor em R$ coberto por lançamentos DIÁRIOS de mix no
     período (ou em todo o histórico, se ini/fim não informados). Retorna (valores_dict,
@@ -713,6 +773,7 @@ def _mix_diario_vendedor_periodo(vendedor_id, ini=None, fim=None):
     return valores, total_coberto
 
 
+@cache_leitura()
 def get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes):
     """Mix de pagamento (R$ por modalidade) de um vendedor num mês específico.
     Usa primeiro o mix DIÁRIO lançado no mês; para a parte do realizado do mês que
@@ -748,6 +809,7 @@ def get_mix_pagamento_vendedor_mes(vendedor_id, ano, mes):
     return valores, total_coberto
 
 
+@cache_leitura()
 def get_mix_pagamento_historico_vendedor(vendedor_id):
     """Média histórica ponderada por modalidade, somando todos os meses em que o
     vendedor tem mix de pagamento lançado (diário e/ou mensal agregado). Retorna
@@ -778,6 +840,7 @@ def get_mix_pagamento_historico_vendedor(vendedor_id):
     return medias_pct, total_geral
 
 
+@cache_leitura()
 def get_mix_pagamento_mes(ano, mes, loja=None):
     """Combina o mix diário + mensal agregado de TODOS os vendedores do filtro num
     DataFrame "longo" (uma linha por vendedor/modalidade, com o valor em R$), mais a
@@ -820,6 +883,7 @@ def nivel_risco_nota_promissoria(pct):
     return "🔴 Alto"
 
 
+@cache_leitura()
 def get_risco_nota_promissoria_mes(ano, mes, loja=None):
     """Por vendedor ativo do filtro: exposição em Nota Promissória no mês (R$ e %),
     média histórica (%) de Nota Promissória e nível de risco resultante. Cruza o mix
@@ -889,8 +953,10 @@ def upsert_inadimplencia(vendedor_id, ano_venda, mes_venda, valor_em_aberto):
                 "valor_em_aberto": valor_em_aberto,
             },
         )
+    limpar_cache()
 
 
+@cache_leitura()
 def get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda):
     """Retorna o valor em aberto já lançado para o vendedor/mês de venda, ou None
     se ainda não houver lançamento (diferente de 0, que significa 'sem pendência')."""
@@ -905,6 +971,7 @@ def get_inadimplencia_vendedor(vendedor_id, ano_venda, mes_venda):
     return float(df.iloc[0]["valor_em_aberto"]) if not df.empty else None
 
 
+@cache_leitura()
 def get_inadimplencia_mes(ano_venda, mes_venda, loja=None):
     """Por vendedor ativo do filtro: valor vendido a prazo (Nota Promissória) no mês
     de venda informado, valor em aberto lançado e o índice de inadimplência (%)."""
@@ -931,6 +998,7 @@ def get_inadimplencia_mes(ano_venda, mes_venda, loja=None):
     return pd.DataFrame(linhas)
 
 
+@cache_leitura()
 def get_inadimplencia_historico_vendedor(vendedor_id):
     """Série histórica (uma linha por mês de venda com valor em aberto lançado) do
     vendedor: valor vendido a prazo, valor em aberto e o índice de inadimplência (%)
@@ -962,6 +1030,7 @@ def get_inadimplencia_historico_vendedor(vendedor_id):
     return pd.DataFrame(linhas)
 
 
+@cache_leitura()
 def get_indice_inadimplencia_resumo_vendedor(vendedor_id):
     """Resumo do índice de inadimplência histórico do vendedor: média ponderada por
     R$ (soma valor em aberto ÷ soma valor a prazo de todos os meses com dado válido —
@@ -997,6 +1066,7 @@ def mes_anterior(ano, mes):
     return ano, mes - 1
 
 
+@cache_leitura()
 def get_totais_mes(ano, mes, loja=None):
     """Meta total, realizado total (diário + manual) e pedidos totais (diário +
     manual) do mês (já filtrado por loja)."""
@@ -1012,6 +1082,7 @@ def get_totais_mes(ano, mes, loja=None):
     return {"meta": meta_total, "realizado": realizado_total, "pedidos": pedidos_total}
 
 
+@cache_leitura()
 def get_indicadores_vendedores_mes(ano, mes, loja=None):
     """Uma linha por vendedor ativo com meta, realizado (diário + manual), pedidos
     (diário + manual), atingimento (%) e ticket médio individual do mês — já
