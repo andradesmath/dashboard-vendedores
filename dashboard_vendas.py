@@ -1135,62 +1135,6 @@ with tab_dashboard:
 
     st.markdown("---")
 
-    # ---- Atingimento Médio por Vendedor (meses finalizados) ----
-    st.markdown("### 📊 Atingimento Médio por Vendedor — Meses Finalizados")
-    st.caption(
-        "Média do atingimento (%) de cada vendedor considerando só os meses já FECHADOS "
-        "(com meta lançada), excluindo o mês em andamento do filtro acima — evita que um mês "
-        "ainda incompleto puxe a média para baixo ou para cima."
-    )
-
-    hist_atingimento = db.get_historico_meta_realizado(loja=loja_filtro)
-    hist_atingimento = hist_atingimento[hist_atingimento["valor_meta"] > 0].copy()
-    hist_atingimento = hist_atingimento[
-        ~((hist_atingimento["ano"] == ano_filtro) & (hist_atingimento["mes"] == mes_filtro))
-    ]
-
-    if hist_atingimento.empty:
-        st.info("Sem meses finalizados com meta lançada para calcular a média.")
-    else:
-        hist_atingimento["atingimento_pct"] = (
-            hist_atingimento["realizado"] / hist_atingimento["valor_meta"] * 100
-        )
-        resumo_ating = (
-            hist_atingimento.groupby(["vendedor_id", "nome", "loja"])["atingimento_pct"]
-            .agg(atingimento_medio="mean", meses_finalizados="count")
-            .reset_index()
-            .sort_values("atingimento_medio", ascending=False)
-        )
-
-        resumo_ating_fmt = resumo_ating.copy()
-        resumo_ating_fmt["Atingimento Médio (%)"] = resumo_ating_fmt["atingimento_medio"].apply(
-            lambda v: f"{v:.1f}%"
-        )
-        resumo_ating_fmt["Meses Finalizados"] = resumo_ating_fmt["meses_finalizados"]
-        st.dataframe(
-            resumo_ating_fmt[
-                ["nome", "loja", "Atingimento Médio (%)", "Meses Finalizados"]
-            ].rename(columns={"nome": "Nome", "loja": "Loja"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        fig_ating_medio = go.Figure(go.Bar(
-            x=resumo_ating["atingimento_medio"], y=resumo_ating["nome"], orientation="h",
-            marker_color=[VERDE if v >= 100 else AZUL_CLARO for v in resumo_ating["atingimento_medio"]],
-            text=resumo_ating["atingimento_medio"].apply(lambda v: f"{v:.1f}%"),
-            textposition="outside",
-        ))
-        fig_ating_medio.update_layout(
-            xaxis_title="Atingimento Médio (%)",
-            yaxis=dict(autorange="reversed"),
-            margin=dict(l=10, r=10, t=20, b=10), height=max(280, 32 * len(resumo_ating)),
-        )
-        fig_ating_medio.add_vline(x=100, line_dash="dash", line_color="grey")
-        st.plotly_chart(fig_ating_medio, use_container_width=True)
-
-    st.markdown("---")
-
     # ---- Evolução diária: acumulado realizado vs meta diária projetada ----
     st.markdown("### 📈 Evolução Diária: Realizado Acumulado vs. Meta Projetada")
     ultimo_dia_mes = calendar.monthrange(ano_filtro, mes_filtro)[1]
