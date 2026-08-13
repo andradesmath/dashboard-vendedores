@@ -1135,6 +1135,49 @@ with tab_dashboard:
 
     st.markdown("---")
 
+    # ---- Atingimento Médio por Vendedor (meses finalizados) ----
+    st.markdown("### 📊 Atingimento Médio por Vendedor — Meses Finalizados")
+    st.caption(
+        f"Média do atingimento (%) mensal de cada vendedor, considerando só meses já FECHADOS "
+        f"(com meta lançada) — de {db.MESES_PT[db.BASE_INICIO_MES]}/{db.BASE_INICIO_ANO} (início "
+        "da base de dados) até o mês anterior ao atual. Independe do filtro de mês acima e nunca "
+        "inclui o mês corrente, que ainda está em andamento."
+    )
+
+    resumo_ating = db.get_atingimento_medio_vendedor(loja=loja_filtro)
+
+    if resumo_ating.empty:
+        st.info("Sem meses finalizados com meta lançada para calcular a média.")
+    else:
+        resumo_ating_fmt = resumo_ating.copy()
+        resumo_ating_fmt["Atingimento Médio (%)"] = resumo_ating_fmt["atingimento_medio_pct"].apply(
+            lambda v: f"{v:.1f}%"
+        )
+        resumo_ating_fmt["Meses Finalizados"] = resumo_ating_fmt["n_meses"]
+        st.dataframe(
+            resumo_ating_fmt[
+                ["nome", "loja", "Atingimento Médio (%)", "Meses Finalizados"]
+            ].rename(columns={"nome": "Nome", "loja": "Loja"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        fig_ating_medio = go.Figure(go.Bar(
+            x=resumo_ating["atingimento_medio_pct"], y=resumo_ating["nome"], orientation="h",
+            marker_color=[VERDE if v >= 100 else AZUL_CLARO for v in resumo_ating["atingimento_medio_pct"]],
+            text=resumo_ating["atingimento_medio_pct"].apply(lambda v: f"{v:.1f}%"),
+            textposition="outside",
+        ))
+        fig_ating_medio.update_layout(
+            xaxis_title="Atingimento Médio (%)",
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=10, r=10, t=20, b=10), height=max(280, 32 * len(resumo_ating)),
+        )
+        fig_ating_medio.add_vline(x=100, line_dash="dash", line_color="grey")
+        st.plotly_chart(fig_ating_medio, use_container_width=True)
+
+    st.markdown("---")
+
     # ---- Evolução diária: acumulado realizado vs meta diária projetada ----
     st.markdown("### 📈 Evolução Diária: Realizado Acumulado vs. Meta Projetada")
     ultimo_dia_mes = calendar.monthrange(ano_filtro, mes_filtro)[1]
