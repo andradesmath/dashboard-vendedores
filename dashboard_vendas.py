@@ -79,9 +79,9 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-import pdfplumber
 import plotly.graph_objects as go
 import streamlit as st
+from pypdf import PdfReader
 
 import db
 import pdf_export
@@ -241,40 +241,57 @@ def parse_linha_venda_diaria(linha):
 
 
 def extrair_texto_pdf(arquivo_bytes):
-    """Extrai o texto de todas as páginas de um PDF (bytes) usando pdfplumber."""
-    textos = []
-    with pdfplumber.open(io.BytesIO(arquivo_bytes)) as pdf:
-        for pagina in pdf.pages:
-            textos.append(pagina.extract_text() or "")
-    return "\n".join(textos)
+    """Extrai o texto de todas as páginas de um PDF (bytes) usando pypdf."""
+    reader = PdfReader(io.BytesIO(arquivo_bytes))
+    return "\n".join((pagina.extract_text() or "") for pagina in reader.pages)
 
 
-def parse_linha_relatorio_pdf(linha):
-    """Espera uma linha de vendedor do 'Relatório de Totais de Vendas' do SGI:
-    Vendedor seguido de 12 colunas numéricas (Nº Cli, C. Cli, Nº Ped, Nº Item, M. Ped,
-    M. Cli, Bruto, Bonf, Troca, T. Liq., Desc%, Verba). Ignora linhas de
-    cabeçalho/rodapé/totais (que não têm exatamente esse formato)."""
-    tokens = linha.split()
-    if len(tokens) < 13:
-        return None
-    valores = tokens[-12:]
-    nome_tokens = tokens[:-12]
-    if not nome_tokens:
-        return None
-    nome = " ".join(nome_tokens).strip()
-    if not nome or any(c.isdigit() or c == ":" for c in nome):
-        return None
-    padrao_num = re.compile(r"^-?[\d.,]+%?$")
-    if not all(padrao_num.match(v) for v in valores):
-        return None
-    try:
-        n_ped = int(valores[2])
-    except ValueError:
-        return None
-    t_liq = parse_valor_brl(valores[9])
-    if t_liq is None:
-        return None
-    return {"nome_pdf": nome, "n_ped": n_ped, "t_liq": t_liq}
+PADRAO_NUM_PDF = re.compile(r"^-?[\d.,]+%?$")
+NOME_MAX_TOKENS_PDF = 4
+
+
+def _eh_token_nome_pdf(token):
+    """Um token só conta como parte do nome do vendedor se: não for numérico, não
+    tiver ':' nem '.' (evita rótulos de cabeçalho como 'C.', 'T.', 'Nº:') e estiver
+    todo em maiúsculas (os nomes no relatório do SGI vêm em CAIXA ALTA; os rótulos de
+    coluna do cabeçalho, como 'Vendedor', 'Desc', 'Verba', vêm em Title Case)."""
+    return (
+        not PADRAO_NUM_PDF.match(token) and ":" not in token and "." not in token and token.isupper()
+    )
+
+
+def parse_tokens_relatorio_pdf(tokens):
+    """Varre a lista de tokens (palavras) de todo o texto extraído do PDF procurando
+    blocos 'NOME (1-4 palavras em caixa alta) + 12 valores numéricos' — o formato de
+    cada linha de vendedor do 'Relatório de Totais de Vendas' do SGI (Nº Cli, C. Cli,
+    Nº Ped, Nº Item, M. Ped, M. Cli, Bruto, Bonf, Troca, T. Liq., Desc%, Verba).
+    Não depende de quebras de linha, então funciona tanto com extratores que mantêm a
+    linha inteira quanto com os que colocam um valor por linha."""
+    resultados = []
+    i, n = 0, len(tokens)
+    while i < n:
+        if not _eh_token_nome_pdf(tokens[i]):
+            i += 1
+            continue
+        nome_tokens = []
+        j = i
+        while j < n and len(nome_tokens) < NOME_MAX_TOKENS_PDF and _eh_token_nome_pdf(tokens[j]):
+            nome_tokens.append(tokens[j])
+            j += 1
+        if nome_tokens and j + 12 <= n and all(PADRAO_NUM_PDF.match(v) for v in tokens[j:j + 12]):
+            bloco = tokens[j:j + 12]
+            nome = " ".join(nome_tokens)
+            try:
+                n_ped = int(bloco[2])
+            except ValueError:
+                n_ped = None
+            t_liq = parse_valor_brl(bloco[9])
+            if n_ped is not None and t_liq is not None:
+                resultados.append({"nome_pdf": nome, "n_ped": n_ped, "t_liq": t_liq})
+            i = j + 12
+        else:
+            i += 1
+    return resultados
 
 
 def parse_relatorio_vendas_pdf(arquivo_bytes):
@@ -301,11 +318,7 @@ def parse_relatorio_vendas_pdf(arquivo_bytes):
             loja_detectada = loja
             break
 
-    linhas = []
-    for linha in texto.splitlines():
-        resultado = parse_linha_relatorio_pdf(linha)
-        if resultado:
-            linhas.append(resultado)
+    linhas = parse_tokens_relatorio_pdf(texto.split())
 
     return {"data_ini": data_ini, "data_fim": data_fim, "loja_detectada": loja_detectada, "linhas": linhas}
 
