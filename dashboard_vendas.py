@@ -73,7 +73,6 @@ PASSO 3 - DEPLOY GRATUITO NO STREAMLIT COMMUNITY CLOUD
 ====================================================================
 """
 import calendar
-import io
 import re
 from datetime import date
 
@@ -81,10 +80,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from pypdf import PdfReader
 
 import db
 import pdf_export
+from sgi_relatorio import casar_vendedores, parse_relatorio_vendas_pdf, parse_valor_brl
 
 # --------------------------------------------------------------------------
 # Configuração da página e estilo corporativo (azul/verde)
@@ -168,21 +167,6 @@ MESES_ABREV = {
 }
 
 
-def parse_valor_brl(texto):
-    """Converte 'R$ 115.000,00' ou '115000,00' em float. Aceita negativos."""
-    texto = texto.strip().replace("R$", "").strip()
-    if not texto:
-        return None
-    negativo = texto.startswith("-")
-    texto = texto.lstrip("-").strip()
-    texto = texto.replace(".", "").replace(",", ".")
-    try:
-        valor = float(texto)
-    except ValueError:
-        return None
-    return -valor if negativo else valor
-
-
 def parse_linha_historico(linha):
     """Espera: Nome<TAB>mes/ano<TAB>Meta<TAB>Realizado (aceita 2+ espaços como separador
     também). A coluna Realizado é opcional — se ausente (ex.: metas de meses futuros/atuais
@@ -238,96 +222,6 @@ def parse_linha_venda_diaria(linha):
         return None
 
     return {"nome": nome, "data": data_obj, "valor": valor}
-
-
-def extrair_texto_pdf(arquivo_bytes):
-    """Extrai o texto de todas as páginas de um PDF (bytes) usando pypdf."""
-    reader = PdfReader(io.BytesIO(arquivo_bytes))
-    return "\n".join((pagina.extract_text() or "") for pagina in reader.pages)
-
-
-PADRAO_NUM_PDF = re.compile(r"^-?[\d.,]+%?$")
-NOME_MAX_TOKENS_PDF = 4
-
-
-def _eh_token_nome_pdf(token):
-    """Um token só conta como parte do nome do vendedor se: não for numérico, não
-    tiver ':' nem '.' (evita rótulos de cabeçalho como 'C.', 'T.', 'Nº:') e estiver
-    todo em maiúsculas (os nomes no relatório do SGI vêm em CAIXA ALTA; os rótulos de
-    coluna do cabeçalho, como 'Vendedor', 'Desc', 'Verba', vêm em Title Case)."""
-    return (
-        not PADRAO_NUM_PDF.match(token) and ":" not in token and "." not in token and token.isupper()
-    )
-
-
-def parse_tokens_relatorio_pdf(tokens):
-    """Varre a lista de tokens (palavras) de todo o texto extraído do PDF procurando
-    blocos 'NOME (1-4 palavras em caixa alta) + 12 valores numéricos' — o formato de
-    cada linha de vendedor do 'Relatório de Totais de Vendas' do SGI (Nº Cli, C. Cli,
-    Nº Ped, Nº Item, M. Ped, M. Cli, Bruto, Bonf, Troca, T. Liq., Desc%, Verba).
-    Não depende de quebras de linha, então funciona tanto com extratores que mantêm a
-    linha inteira quanto com os que colocam um valor por linha."""
-    resultados = []
-    i, n = 0, len(tokens)
-    while i < n:
-        if not _eh_token_nome_pdf(tokens[i]):
-            i += 1
-            continue
-        nome_tokens = []
-        j = i
-        while j < n and len(nome_tokens) < NOME_MAX_TOKENS_PDF and _eh_token_nome_pdf(tokens[j]):
-            nome_tokens.append(tokens[j])
-            j += 1
-        if nome_tokens and j + 12 <= n and all(PADRAO_NUM_PDF.match(v) for v in tokens[j:j + 12]):
-            bloco = tokens[j:j + 12]
-            nome = " ".join(nome_tokens)
-            try:
-                n_ped = int(bloco[2])
-            except ValueError:
-                n_ped = None
-            t_liq = parse_valor_brl(bloco[9])
-            if n_ped is not None and t_liq is not None:
-                resultados.append({"nome_pdf": nome, "n_ped": n_ped, "t_liq": t_liq})
-            i = j + 12
-        else:
-            i += 1
-    return resultados
-
-
-def parse_relatorio_vendas_pdf(arquivo_bytes):
-    """Extrai do PDF 'Relatório de Totais de Vendas' do SGI: o período do relatório,
-    a loja detectada pelo cabeçalho e a lista de vendedores com Nº Ped e T. Liq."""
-    texto = extrair_texto_pdf(arquivo_bytes)
-
-    data_ini = data_fim = None
-    m_periodo = re.search(
-        r"Per[ií]odo\s+de\s+(\d{2})/(\d{2})/(\d{4})\s+a\s+(\d{2})/(\d{2})/(\d{4})", texto
-    )
-    if m_periodo:
-        d1, m1, a1, d2, m2, a2 = m_periodo.groups()
-        try:
-            data_ini = date(int(a1), int(m1), int(d1))
-            data_fim = date(int(a2), int(m2), int(d2))
-        except ValueError:
-            pass
-
-    texto_upper = texto.upper()
-    loja_detectada = None
-    for loja in db.LOJAS:
-        if loja.upper() in texto_upper or loja.upper().replace(" ", "") in texto_upper.replace(" ", ""):
-            loja_detectada = loja
-            break
-
-    linhas = parse_tokens_relatorio_pdf(texto.split())
-
-    return {"data_ini": data_ini, "data_fim": data_fim, "loja_detectada": loja_detectada, "linhas": linhas}
-
-
-def normalizar_nome_match(texto):
-    """Normaliza um nome para comparação: maiúsculas, sem espaços — evita falha de
-    match por causa de espaçamento diferente entre o PDF e o cadastro (inclusive
-    quando a extração do PDF gruda duas palavras do nome sem espaço)."""
-    return re.sub(r"\s+", "", texto.strip().upper())
 
 
 def campos_mix_pagamento(key_prefix):
@@ -985,23 +879,9 @@ with tab_lancamentos:
                     )
 
                 vendedores_loja_pdf_df = db.get_vendedores(loja=loja_confirmada_pdf, apenas_ativos=True)
-                mapa_norm_pdf = {
-                    normalizar_nome_match(row["nome"]): row for _, row in vendedores_loja_pdf_df.iterrows()
-                }
-
-                pdf_matched, pdf_nao_encontrados = [], []
-                for linha_pdf in resultado_pdf_vendas["linhas"]:
-                    cadastro_pdf = mapa_norm_pdf.get(normalizar_nome_match(linha_pdf["nome_pdf"]))
-                    if cadastro_pdf is not None:
-                        pdf_matched.append({
-                            "vendedor_id": int(cadastro_pdf["id"]),
-                            "nome": cadastro_pdf["nome"],
-                            "loja": cadastro_pdf["loja"],
-                            "n_ped": linha_pdf["n_ped"],
-                            "t_liq": linha_pdf["t_liq"],
-                        })
-                    else:
-                        pdf_nao_encontrados.append(linha_pdf["nome_pdf"])
+                pdf_matched, pdf_nao_encontrados = casar_vendedores(
+                    resultado_pdf_vendas["linhas"], vendedores_loja_pdf_df
+                )
 
                 if pdf_matched:
                     st.write(f"**{len(pdf_matched)} vendedor(es) do PDF batem com o cadastro:**")
