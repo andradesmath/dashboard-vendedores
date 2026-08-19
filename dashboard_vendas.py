@@ -73,12 +73,13 @@ PASSO 3 - DEPLOY GRATUITO NO STREAMLIT COMMUNITY CLOUD
 ====================================================================
 """
 import calendar
+import io
 import re
 from datetime import date
 
 import numpy as np
-import numpy as np
 import pandas as pd
+import pdfplumber
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -237,6 +238,83 @@ def parse_linha_venda_diaria(linha):
         return None
 
     return {"nome": nome, "data": data_obj, "valor": valor}
+
+
+def extrair_texto_pdf(arquivo_bytes):
+    """Extrai o texto de todas as páginas de um PDF (bytes) usando pdfplumber."""
+    textos = []
+    with pdfplumber.open(io.BytesIO(arquivo_bytes)) as pdf:
+        for pagina in pdf.pages:
+            textos.append(pagina.extract_text() or "")
+    return "\n".join(textos)
+
+
+def parse_linha_relatorio_pdf(linha):
+    """Espera uma linha de vendedor do 'Relatório de Totais de Vendas' do SGI:
+    Vendedor seguido de 12 colunas numéricas (Nº Cli, C. Cli, Nº Ped, Nº Item, M. Ped,
+    M. Cli, Bruto, Bonf, Troca, T. Liq., Desc%, Verba). Ignora linhas de
+    cabeçalho/rodapé/totais (que não têm exatamente esse formato)."""
+    tokens = linha.split()
+    if len(tokens) < 13:
+        return None
+    valores = tokens[-12:]
+    nome_tokens = tokens[:-12]
+    if not nome_tokens:
+        return None
+    nome = " ".join(nome_tokens).strip()
+    if not nome or any(c.isdigit() or c == ":" for c in nome):
+        return None
+    padrao_num = re.compile(r"^-?[\d.,]+%?$")
+    if not all(padrao_num.match(v) for v in valores):
+        return None
+    try:
+        n_ped = int(valores[2])
+    except ValueError:
+        return None
+    t_liq = parse_valor_brl(valores[9])
+    if t_liq is None:
+        return None
+    return {"nome_pdf": nome, "n_ped": n_ped, "t_liq": t_liq}
+
+
+def parse_relatorio_vendas_pdf(arquivo_bytes):
+    """Extrai do PDF 'Relatório de Totais de Vendas' do SGI: o período do relatório,
+    a loja detectada pelo cabeçalho e a lista de vendedores com Nº Ped e T. Liq."""
+    texto = extrair_texto_pdf(arquivo_bytes)
+
+    data_ini = data_fim = None
+    m_periodo = re.search(
+        r"Per[ií]odo\s+de\s+(\d{2})/(\d{2})/(\d{4})\s+a\s+(\d{2})/(\d{2})/(\d{4})", texto
+    )
+    if m_periodo:
+        d1, m1, a1, d2, m2, a2 = m_periodo.groups()
+        try:
+            data_ini = date(int(a1), int(m1), int(d1))
+            data_fim = date(int(a2), int(m2), int(d2))
+        except ValueError:
+            pass
+
+    texto_upper = texto.upper()
+    loja_detectada = None
+    for loja in db.LOJAS:
+        if loja.upper() in texto_upper or loja.upper().replace(" ", "") in texto_upper.replace(" ", ""):
+            loja_detectada = loja
+            break
+
+    linhas = []
+    for linha in texto.splitlines():
+        resultado = parse_linha_relatorio_pdf(linha)
+        if resultado:
+            linhas.append(resultado)
+
+    return {"data_ini": data_ini, "data_fim": data_fim, "loja_detectada": loja_detectada, "linhas": linhas}
+
+
+def normalizar_nome_match(texto):
+    """Normaliza um nome para comparação: maiúsculas, sem espaços — evita falha de
+    match por causa de espaçamento diferente entre o PDF e o cadastro (inclusive
+    quando a extração do PDF gruda duas palavras do nome sem espaço)."""
+    return re.sub(r"\s+", "", texto.strip().upper())
 
 
 def campos_mix_pagamento(key_prefix):
@@ -842,6 +920,108 @@ with tab_lancamentos:
                 )
                 st.session_state.versao_dados += 1
                 st.rerun()
+
+    st.markdown("---")
+    with st.expander("📥 Importar relatório de vendas em PDF (SGI)", expanded=False):
+        st.caption(
+            "Envie o PDF do 'Relatório de Totais de Vendas' do SGI. Pega a data do período, "
+            "o Nº Ped e o T. Liq. de cada vendedor — só importa quem já está cadastrado; "
+            "nomes do PDF sem correspondência no cadastro são listados e ignorados (não cria "
+            "vendedor novo automaticamente)."
+        )
+        arquivo_pdf_vendas = st.file_uploader("Arquivo PDF", type=["pdf"], key="upload_pdf_vendas")
+
+        if arquivo_pdf_vendas is not None and st.button("🔍 Pré-visualizar PDF"):
+            try:
+                st.session_state["pdf_vendas_parse"] = parse_relatorio_vendas_pdf(arquivo_pdf_vendas.read())
+            except Exception as e:
+                st.session_state.pop("pdf_vendas_parse", None)
+                st.error(f"Não foi possível ler o PDF: {e}")
+
+        resultado_pdf_vendas = st.session_state.get("pdf_vendas_parse")
+        if resultado_pdf_vendas is not None:
+            if not resultado_pdf_vendas["linhas"]:
+                st.warning("Nenhuma linha de vendedor reconhecida nesse PDF.")
+            else:
+                col_pdfv1, col_pdfv2 = st.columns(2)
+                with col_pdfv1:
+                    data_default_pdf = (
+                        resultado_pdf_vendas["data_fim"] or resultado_pdf_vendas["data_ini"] or date.today()
+                    )
+                    if (
+                        resultado_pdf_vendas["data_ini"] and resultado_pdf_vendas["data_fim"]
+                        and resultado_pdf_vendas["data_ini"] != resultado_pdf_vendas["data_fim"]
+                    ):
+                        st.caption(
+                            f"⚠️ O PDF cobre um período de "
+                            f"{resultado_pdf_vendas['data_ini'].strftime('%d/%m/%Y')} a "
+                            f"{resultado_pdf_vendas['data_fim'].strftime('%d/%m/%Y')} — todos os "
+                            "valores serão lançados na data única escolhida abaixo."
+                        )
+                    data_confirmada_pdf = st.date_input(
+                        "Data do lançamento", value=data_default_pdf, max_value=date.today(),
+                        key="data_pdf_vendas",
+                    )
+                with col_pdfv2:
+                    indice_loja_pdf = (
+                        db.LOJAS.index(resultado_pdf_vendas["loja_detectada"])
+                        if resultado_pdf_vendas["loja_detectada"] in db.LOJAS else 0
+                    )
+                    loja_confirmada_pdf = st.selectbox(
+                        "Loja", db.LOJAS, index=indice_loja_pdf, key="loja_pdf_vendas"
+                    )
+
+                vendedores_loja_pdf_df = db.get_vendedores(loja=loja_confirmada_pdf, apenas_ativos=True)
+                mapa_norm_pdf = {
+                    normalizar_nome_match(row["nome"]): row for _, row in vendedores_loja_pdf_df.iterrows()
+                }
+
+                pdf_matched, pdf_nao_encontrados = [], []
+                for linha_pdf in resultado_pdf_vendas["linhas"]:
+                    cadastro_pdf = mapa_norm_pdf.get(normalizar_nome_match(linha_pdf["nome_pdf"]))
+                    if cadastro_pdf is not None:
+                        pdf_matched.append({
+                            "vendedor_id": int(cadastro_pdf["id"]),
+                            "nome": cadastro_pdf["nome"],
+                            "loja": cadastro_pdf["loja"],
+                            "n_ped": linha_pdf["n_ped"],
+                            "t_liq": linha_pdf["t_liq"],
+                        })
+                    else:
+                        pdf_nao_encontrados.append(linha_pdf["nome_pdf"])
+
+                if pdf_matched:
+                    st.write(f"**{len(pdf_matched)} vendedor(es) do PDF batem com o cadastro:**")
+                    preview_pdf_df = pd.DataFrame(pdf_matched)
+                    preview_pdf_fmt = preview_pdf_df.copy()
+                    preview_pdf_fmt["T. Liq."] = preview_pdf_fmt["t_liq"].apply(db.formatar_moeda)
+                    st.dataframe(
+                        preview_pdf_fmt[["nome", "loja", "n_ped", "T. Liq."]].rename(
+                            columns={"nome": "Nome", "loja": "Loja", "n_ped": "Nº Ped"}
+                        ),
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.warning("Nenhum vendedor do PDF bate com o cadastro da loja selecionada.")
+
+                if pdf_nao_encontrados:
+                    st.caption(
+                        "⚠️ Ignorados (sem correspondência no cadastro): " + ", ".join(pdf_nao_encontrados)
+                    )
+
+                if pdf_matched and st.button("✅ Confirmar importação do PDF"):
+                    for item_pdf in pdf_matched:
+                        db.upsert_venda(
+                            item_pdf["vendedor_id"], data_confirmada_pdf,
+                            float(item_pdf["t_liq"]), int(item_pdf["n_ped"]),
+                        )
+                    st.success(
+                        f"{len(pdf_matched)} lançamento(s) importado(s) para "
+                        f"{data_confirmada_pdf.strftime('%d/%m/%Y')}."
+                    )
+                    st.session_state.pop("pdf_vendas_parse", None)
+                    st.session_state.versao_dados += 1
+                    st.rerun()
 
     st.markdown("---")
     with st.expander("📥 Importar vendas diárias em lote (sem pedidos)"):
