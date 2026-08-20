@@ -82,6 +82,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import db
+import github_actions
 import pdf_export
 from sgi_relatorio import casar_vendedores, parse_relatorio_vendas_pdf, parse_valor_brl
 
@@ -758,6 +759,45 @@ with tab_metas:
 # ABA 3 - LANÇAMENTOS DIÁRIOS
 # ==========================================================================
 with tab_lancamentos:
+    with st.expander("🔄 Sincronizar com o SGI agora", expanded=False):
+        st.caption(
+            "Dispara a mesma automação que roda sozinha às 12h e 19h: loga no SGI, gera os "
+            "relatórios de hoje (Totais de Vendas e Totais de Vendas Por Produto) e grava no "
+            "painel. Roda no GitHub Actions (não aqui no navegador), então leva de 1 a 3 "
+            "minutos — a tela atualiza sozinha quando terminar."
+        )
+        col_sync1, col_sync2 = st.columns([1, 2])
+        with col_sync1:
+            loja_sync = st.selectbox("Loja", ["Ambas"] + db.LOJAS, key="loja_sync_manual")
+        with col_sync2:
+            st.write("")
+            disparar_sync = st.button("🔄 Puxar dados do SGI agora", key="btn_sync_manual")
+
+        if disparar_sync:
+            try:
+                loja_param = None if loja_sync == "Ambas" else loja_sync
+                disparado_em = github_actions.disparar_sincronizacao(loja=loja_param)
+                status_placeholder = st.empty()
+                with st.spinner("Sincronizando com o SGI — isso pode levar alguns minutos..."):
+                    sucesso, url_run = github_actions.aguardar_conclusao(
+                        disparado_em, callback_status=status_placeholder.caption
+                    )
+                if sucesso:
+                    db.limpar_cache()
+                    st.success("Sincronização concluída! Atualizando os números...")
+                    st.session_state.versao_dados += 1
+                    st.rerun()
+                elif sucesso is False:
+                    st.error(f"A sincronização terminou com erro. Veja os detalhes/logs em: {url_run}")
+                else:
+                    st.warning(
+                        f"Ainda não terminou depois de alguns minutos — pode continuar rodando. "
+                        f"Acompanhe em: {url_run}"
+                    )
+            except github_actions.SincronizacaoIndisponivel as e:
+                st.error(str(e))
+
+    st.markdown("---")
     st.subheader("Lançamento diário de vendas")
     vendedores_df = db.get_vendedores(apenas_ativos=True)
 

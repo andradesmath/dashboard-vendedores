@@ -7,7 +7,7 @@
     <meta name="description" content="SGI SOLUTION">
     <link rel="shortcut icon" type="image/png" href="http://138.255.35.101:8888/favicon2.png">
     <meta name="theme-color" content="#ffffff">
-    <meta name="csrf-token" content="DghOyHkgJlFPgoMUlQSiY8iapn0YSNnFQl5wYbh1">
+    <meta name="csrf-token" content="Amx7ARhAUvjmP7JSvR0avWKGwfJ48aQBvUhJrki4">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,400italic,500,700">
     <link rel="stylesheet" href="http://138.255.35.101:8888/assets/backend/css/vendor.min.css">
     <link rel="stylesheet" href="http://138.255.35.101:8888/assets/backend/css/elephant.min.css">
@@ -71,7 +71,7 @@
                     <li class="dropdown hidden-xs">
                         <button class="navbar-account-btn" data-toggle="dropdown" aria-haspopup="true">
                             <img class="rounded" width="36" height="36" src="http://138.255.35.101:8888/assets/backend/img/3002121059.jpg" alt="Teddy Wilson">
-                            MATHEUS - CASA DE ADUBOS CAFE BOM
+                            MATHEUS - PORTEIRA AGROCOMERCIAL
                             <span class="caret"></span>
                         </button>
                         <ul class="dropdown-menu dropdown-menu-right">
@@ -79,6 +79,9 @@
                                 <a href="http://138.255.35.101:8888/usuario/editar/7">Perfil</a>
                             </li>
 
+                                                            <li>
+                                    <a href="http://138.255.35.101:8888/configuracao/editar">Configurações</a>
+                                </li>
                                                         <li><a href="http://138.255.35.101:8888/logout">Sair</a></li>
                         </ul>
                     </li>
@@ -141,7 +144,12 @@
                                 Meta de Vendedor
                             </a>
                         </li>
-                                                        </ul>
+                                                                <li>
+                            <a class="link-menu" href="http://138.255.35.101:8888/meta-remuneracao">
+                                Meta de Remuneração
+                            </a>
+                        </li>
+                                    </ul>
             </li>
                             <li class="sidenav-item" data-grupo-pai="cadastros">
                 <a class="link-menu" href="http://138.255.35.101:8888/bonus-comissao">
@@ -233,6 +241,19 @@
                             </ul>
         </li>
     
+            <li class="sidenav-heading pai-grupo-menu" data-grupo="relatorios">Tributação</li>
+
+        <li class="sidenav-item has-subnav item-grupo-menu" data-grupo-pai="relatorios">
+            <a href="#" aria-haspopup="true">
+                <span class="sidenav-icon icon icon-briefcase"></span>
+                <span class="sidenav-label">Tributação</span>
+            </a>
+            <ul class="sidenav-subnav collapse" aria-expanded="false">
+                <li class="sidenav-subheading">Tributação</li>
+                                    <li><a class="link-menu" href="http://138.255.35.101:8888/tributacao/cenario">Cenários</a></li>
+                                                    <li><a class="link-menu" href="http://138.255.35.101:8888/tributacao/cenario-tributo">Cenário IBS/CBS</a></li>
+                            </ul>
+        </li>
     
 
             <li class="sidenav-heading pai-grupo-menu" data-grupo="relatorios">Relatórios</li>
@@ -254,6 +275,8 @@
                                 de Seções Nuvemshop</a>
                         
 
+                                                </li><li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/estoque-por-dia">Estoque por
+                                Dia</a>
                         
                 </li></ul>
             </li>
@@ -415,7 +438,8 @@
                                                                 <li>
                             <a class="link-menu" href="http://138.255.35.101:8888/relatorio/metas-2" target="_blank" rel="noopener noreferrer">Metas 2</a>
                         </li>
-                                                        </ul>
+                                                                <li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/remuneracao">Remuneração</a></li>
+                                    </ul>
             </li>
         
                     <li class="sidenav-item has-subnav item-grupo-menu" data-grupo-pai="relatorios">
@@ -435,6 +459,9 @@
                                 Pedidos</a>
                         </li>
                     
+                                            <li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/painel-de-conferencia-de-entrada">Painel de
+                                Conferência de Entrada</a>
+                        </li>
                                                                 <li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/indice-devolucao">Índice de
                                 Devoluções</a>
                                                                                             </li><li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/separacao-de-pedidos">Relação
@@ -478,7 +505,9 @@
                                             <li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/lotes">Lotes</a>
                                                                         </li><li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/extrato-movimentacao-produto">Extrato
                                 Movimentação Produto</a>
-                                                                        
+                                                                        </li><li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/painel-de-balancos">Painel de Balanços</a>
+                                                
+                                                </li><li><a class="link-menu" href="http://138.255.35.101:8888/relatorio/painel-de-balancos-rapidos">Painel de Balanços Rápidos</a>
                                         </li></ul>
             </li>
         
@@ -537,7 +566,7 @@
             <div class="panel panel-body">
 
                 <div class="demo-form-wrapper">
-                    <form method="POST" action="http://138.255.35.101:8888/relatorio/total-de-vendas" accept-charset="UTF-8" data-toogle="validator" class="form-relatorio" rota-pdf="http://138.255.35.101:8888/relatorio/total-de-vendas/pdf" rota-excel="http://138.255.35.101:8888/relatorio/total-de-vendas/excel" rota-lista="http://138.255.35.101:8888/relatorio/total-de-vendas" target="_blank" id="formRelatorio"><input name="_token" type="hidden" value="DghOyHkgJlFPgoMUlQSiY8iapn0YSNnFQl5wYbh1" style="">
+                    <form method="POST" action="http://138.255.35.101:8888/relatorio/total-de-vendas" accept-charset="UTF-8" data-toogle="validator" class="form-relatorio" rota-pdf="http://138.255.35.101:8888/relatorio/total-de-vendas/pdf" rota-excel="http://138.255.35.101:8888/relatorio/total-de-vendas/excel" rota-lista="http://138.255.35.101:8888/relatorio/total-de-vendas" target="_blank" id="formRelatorio"><input name="_token" type="hidden" value="Amx7ARhAUvjmP7JSvR0avWKGwfJ48aQBvUhJrki4" style="">
                     <input name="tipo_relatorio" type="hidden" value="total-de-vendas" style="">
 
                     <div class="row gutter-xs">
@@ -814,7 +843,7 @@
         </div>
     </div>
     <form method="POST" id="formConfirmDeletar" accept-charset="UTF-8">
-        <input type="hidden" name="_token" value="DghOyHkgJlFPgoMUlQSiY8iapn0YSNnFQl5wYbh1" style="">
+        <input type="hidden" name="_token" value="Amx7ARhAUvjmP7JSvR0avWKGwfJ48aQBvUhJrki4" style="">
         <input type="hidden" name="_method" value="delete" style="">
     </form>
 

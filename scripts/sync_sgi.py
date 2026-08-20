@@ -9,8 +9,13 @@ no Postgres do painel, puxando DOIS relatórios na mesma sessão logada:
 Roteiro de cada um: Login -> Vendas -> <relatório> -> período = hoje -> gerar
 PDF -> extrair dados.
 
-Pensado para rodar via GitHub Actions (agendado às 12h e 19h de Brasília), mas
-roda local também para testar/depurar.
+Pensado para rodar via GitHub Actions (agendado às 12h e 19h de Brasília, e sob
+demanda pelo botão "Sincronizar com o SGI agora" do painel, que dispara esse mesmo
+workflow via API), mas roda local também para testar/depurar.
+
+As funções de login/navegação/captura de PDF daqui são reaproveitadas por
+scripts/backfill_produtos.py (importação histórica de Vendas por Produto) — evite
+duplicar essa lógica lá, só chame as funções deste módulo.
 
 IMPORTANTE: como não foi possível inspecionar o site ao vivo durante o
 desenvolvimento (a página trava carregando na sessão usada para construir isso, e
@@ -147,17 +152,20 @@ def selecionar_agrupamento_vendedor_produto(page):
     page.get_by_text(valor, exact=True).first.click()
 
 
-def _preencher_periodo_por_label(page, rotulo_ini, rotulo_fim, data_str):
-    """Preenche Data Inicial / Data Final pelo rótulo; se não achar por label, cai
-    pro fallback de pegar os dois primeiros campos de data/texto da página."""
-    ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_str)
-    ok_fim = _preencher_por_label_ou_placeholder(page, [rotulo_fim], data_str)
+def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="Data Inicial", rotulo_fim="Data Final"):
+    """Preenche os campos de período (Data Inicial / Data Final, com rótulos
+    configuráveis) com datas possivelmente diferentes — usado tanto pro dia de hoje
+    (sync diário) quanto por um mês/dia específico (backfill histórico). Se não
+    achar os campos pelo rótulo, cai pro fallback de pegar os dois primeiros campos
+    de data/texto da página."""
+    ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
+    ok_fim = _preencher_por_label_ou_placeholder(page, [rotulo_fim], data_fim_str)
     if ok_ini and ok_fim:
         return
     campos = page.locator("input[type='text'], input[type='date']").all()
     if len(campos) >= 2:
-        campos[0].fill(data_str)
-        campos[1].fill(data_str)
+        campos[0].fill(data_ini_str)
+        campos[1].fill(data_fim_str)
 
 
 def _capturar_pdf_via_clique(page, context, botao):
@@ -185,9 +193,14 @@ def _capturar_pdf_via_clique(page, context, botao):
         nova_pagina = nova_pagina_info.value
         nova_pagina.wait_for_load_state("domcontentloaded", timeout=30000)
         resposta = nova_pagina.request.get(nova_pagina.url) if hasattr(nova_pagina, "request") else None
-        if resposta is not None:
-            return resposta.body()
-        return nova_pagina.pdf()
+        conteudo = resposta.body() if resposta is not None else nova_pagina.pdf()
+        # Fecha a aba nova — importante no backfill histórico, que gera dezenas de
+        # relatórios em sequência na mesma sessão; sem fechar, as abas se acumulam.
+        try:
+            nova_pagina.close()
+        except Exception:
+            pass
+        return conteudo
     except PlaywrightTimeoutError:
         pass
 
@@ -199,86 +212,102 @@ def _capturar_pdf_via_clique(page, context, botao):
     return resposta_info.value.body()
 
 
-def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
-    """Abre o navegador, loga no SGI e captura, na MESMA sessão, os dois relatórios
-    do dia: 'Totais de Vendas' e 'Totais de Vendas Por Produto'. Retorna
-    {"vendas": bytes, "produtos": bytes}."""
+# --------------------------------------------------------------------------
+# Funções reutilizáveis de login/navegação (usadas pelo sync diário e pelo
+# backfill histórico de scripts/backfill_produtos.py).
+# --------------------------------------------------------------------------
+def fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
+    """Abre o navegador e loga no SGI. Retorna (browser, context, page) já logados
+    — quem chama é responsável por navegar aos relatórios e por fechar o browser
+    (browser.close()) no final."""
     browser = playwright.chromium.launch(headless=not headed)
     context = browser.new_context(accept_downloads=True)
     page = context.new_page()
+
+    page.goto(url_login, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)  # dá tempo de qualquer JS inicial rodar
+
     try:
-        # ---- 1) Login ----
-        page.goto(url_login, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)  # dá tempo de qualquer JS inicial rodar
+        page.get_by_label("Empresa", exact=False).select_option(label=empresa_texto)
+    except Exception:
+        # fallback: primeiro <select> da página
+        page.locator("select").first.select_option(label=empresa_texto)
 
-        try:
-            page.get_by_label("Empresa", exact=False).select_option(label=empresa_texto)
-        except Exception:
-            # fallback: primeiro <select> da página
-            page.locator("select").first.select_option(label=empresa_texto)
+    if not _preencher_por_label_ou_placeholder(page, ["Login", "Usuário", "Usuario"], login):
+        page.locator("input[type='text']").first.fill(login)
+    if not _preencher_por_label_ou_placeholder(page, ["Senha"], senha):
+        page.locator("input[type='password']").first.fill(senha)
 
-        if not _preencher_por_label_ou_placeholder(page, ["Login", "Usuário", "Usuario"], login):
-            page.locator("input[type='text']").first.fill(login)
-        if not _preencher_por_label_ou_placeholder(page, ["Senha"], senha):
-            page.locator("input[type='password']").first.fill(senha)
+    _salvar_debug(page, loja, "antes_do_login")
+    page.get_by_role("button", name="Login").click()
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)
+    _salvar_debug(page, loja, "depois_do_login")
 
-        _salvar_debug(page, loja, "antes_do_login")
-        page.get_by_role("button", name="Login").click()
-        page.wait_for_load_state("domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
-        _salvar_debug(page, loja, "depois_do_login")
+    return browser, context, page
 
-        hoje_str = date.today().strftime("%d/%m/%Y")
 
-        # ---- 2) Relatório 1: Vendas > Totais de Vendas ----
+def navegar_ate_totais_de_vendas(page):
+    page.get_by_text("Vendas", exact=True).first.click()
+    page.wait_for_timeout(500)
+    page.get_by_text("Totais de Vendas", exact=True).first.click()
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)
+
+
+def navegar_ate_totais_de_vendas_por_produto(page):
+    # Reabre o menu "Vendas" (pode ter fechado ao navegar antes) — não é erro se já
+    # estiver visível, por isso o try/except.
+    try:
         page.get_by_text("Vendas", exact=True).first.click()
         page.wait_for_timeout(500)
-        page.get_by_text("Totais de Vendas", exact=True).first.click()
-        page.wait_for_load_state("domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
+    except Exception:
+        pass
+    page.get_by_text("Totais de Vendas Por Produto", exact=True).first.click()
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)
+
+
+def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_fim_str):
+    """Assume que já está na página 'Totais de Vendas' (ver navegar_ate_totais_de_vendas).
+    Reseleciona a Empresa (o valor não acompanha automaticamente o do login) e o
+    período pedido, clica em PDF e retorna os bytes."""
+    selecionar_empresa_no_formulario(page, empresa_texto)
+    campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
+    if len(campos_periodo) >= 2:
+        campos_periodo[0].fill(data_ini_str)
+        campos_periodo[1].fill(data_fim_str)
+    botao_pdf = page.get_by_role("button", name="PDF", exact=False)
+    return _capturar_pdf_via_clique(page, context, botao_pdf)
+
+
+def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str):
+    """Assume que já está na página 'Totais de Vendas Por Produto' (ver
+    navegar_ate_totais_de_vendas_por_produto). Preenche o período pedido, garante
+    Agrupamento = 'Vendedor/Produto', clica em Imprimir e retorna os bytes."""
+    _preencher_data_inicial_final(page, data_ini_str, data_fim_str, "Data Inicial", "Data Final")
+    selecionar_agrupamento_vendedor_produto(page)
+    botao_imprimir = page.get_by_role("button", name="Imprimir", exact=False)
+    return _capturar_pdf_via_clique(page, context, botao_imprimir)
+
+
+def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
+    """Abre o navegador, loga no SGI e captura, na MESMA sessão, os dois relatórios
+    do dia (período = hoje): 'Totais de Vendas' e 'Totais de Vendas Por Produto'.
+    Retorna {"vendas": bytes, "produtos": bytes}."""
+    browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
+    try:
+        hoje_str = date.today().strftime("%d/%m/%Y")
+
+        navegar_ate_totais_de_vendas(page)
         _salvar_debug(page, loja, "form_vendas_antes_empresa")
+        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, hoje_str, hoje_str)
 
-        # Campo "Empresa" DENTRO do formulário do relatório — dropdown separado do
-        # da tela de login, o valor não acompanha automaticamente.
-        selecionar_empresa_no_formulario(page, empresa_texto)
-        _salvar_debug(page, loja, "form_vendas_depois_empresa")
-
-        campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
-        if len(campos_periodo) >= 2:
-            campos_periodo[0].fill(hoje_str)
-            campos_periodo[1].fill(hoje_str)
-        else:
-            print(f"  [{loja}] aviso: não achei os 2 campos de período (Totais de Vendas) — o "
-                  "relatório pode sair com a data padrão do formulário em vez de hoje.")
-
-        botao_pdf_vendas = page.get_by_role("button", name="PDF", exact=False)
-        pdf_vendas = _capturar_pdf_via_clique(page, context, botao_pdf_vendas)
-
-        # ---- 3) Relatório 2: Vendas > Totais de Vendas Por Produto ----
-        # Reabre o menu "Vendas" (pode ter fechado ao navegar) e clica no item do
-        # segundo relatório. Nome exato confirmado pelo roteiro em PDF do usuário.
-        try:
-            page.get_by_text("Vendas", exact=True).first.click()
-            page.wait_for_timeout(500)
-        except Exception:
-            pass
-        page.get_by_text("Totais de Vendas Por Produto", exact=True).first.click()
-        page.wait_for_load_state("domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1500)
+        navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "form_produto_antes_preencher")
-
-        _preencher_periodo_por_label(page, "Data Inicial", "Data Final", hoje_str)
-
-        # Agrupamento SEMPRE "Vendedor/Produto" — exigência do usuário, é o formato
-        # que o parser espera (uma seção por vendedor).
-        selecionar_agrupamento_vendedor_produto(page)
-        _salvar_debug(page, loja, "form_produto_depois_preencher")
-
-        botao_imprimir = page.get_by_role("button", name="Imprimir", exact=False)
-        pdf_produtos = _capturar_pdf_via_clique(page, context, botao_imprimir)
+        pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, hoje_str, hoje_str)
 
         return {"vendas": pdf_vendas, "produtos": pdf_produtos}
-
     except Exception:
         _salvar_debug(page, loja, "erro")
         raise

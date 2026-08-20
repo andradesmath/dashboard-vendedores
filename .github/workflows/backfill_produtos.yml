@@ -1,0 +1,63 @@
+name: Backfill histórico - Vendas por Produto
+
+# Só roda quando disparado manualmente (aba Actions do repositório) — é uma
+# importação histórica de UMA VEZ (set/2025 até hoje), não faz parte da
+# sincronização automática de 12h/19h (essa continua em sync_sgi.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      loja:
+        description: "Rodar só uma loja (deixe em branco para todas as configuradas)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "Porteira"
+          - "Casa de Adubo"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # Puxa dezenas de relatórios por loja (11 meses + os dias do mês corrente) —
+    # bem mais demorado que a sincronização diária normal.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements-sync.txt
+          playwright install --with-deps chromium
+
+      - name: Rodar backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SGI_URL_LOGIN: ${{ secrets.SGI_URL_LOGIN }}
+          SGI_LOGIN: ${{ secrets.SGI_LOGIN }}
+          SGI_SENHA: ${{ secrets.SGI_SENHA }}
+          SGI_EMPRESA_PORTEIRA: ${{ secrets.SGI_EMPRESA_PORTEIRA }}
+          SGI_EMPRESA_CASA_ADUBO: ${{ secrets.SGI_EMPRESA_CASA_ADUBO }}
+        run: |
+          if [ -n "${{ github.event.inputs.loja }}" ]; then
+            python scripts/backfill_produtos.py --loja "${{ github.event.inputs.loja }}"
+          else
+            python scripts/backfill_produtos.py
+          fi
+
+      - name: Guardar screenshots/HTML de depuração (se algo falhar)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-backfill-produtos-${{ github.run_id }}
+          path: |
+            debug_*.png
+            debug_*.html
+            debug_*.pdf
+          if-no-files-found: ignore
+          retention-days: 7
