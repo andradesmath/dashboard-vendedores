@@ -762,21 +762,27 @@ with tab_lancamentos:
     with st.expander("🔄 Sincronizar com o SGI agora", expanded=False):
         st.caption(
             "Dispara a mesma automação que roda sozinha às 12h e 19h: loga no SGI, gera os "
-            "relatórios de hoje (Totais de Vendas e Totais de Vendas Por Produto) e grava no "
-            "painel. Roda no GitHub Actions (não aqui no navegador), então leva de 1 a 3 "
-            "minutos — a tela atualiza sozinha quando terminar."
+            "relatórios do dia escolhido (Totais de Vendas e Totais de Vendas Por Produto) e "
+            "grava no painel. Escolha uma data anterior pra reprocessar um dia específico. Roda "
+            "no GitHub Actions (não aqui no navegador), então leva de 1 a 3 minutos — a tela "
+            "atualiza sozinha quando terminar."
         )
-        col_sync1, col_sync2 = st.columns([1, 2])
+        col_sync1, col_sync2, col_sync3 = st.columns([1, 1, 1.4])
         with col_sync1:
             loja_sync = st.selectbox("Loja", ["Ambas"] + db.LOJAS, key="loja_sync_manual")
         with col_sync2:
+            data_sync = st.date_input(
+                "Data", value=date.today(), max_value=date.today(), key="data_sync_manual"
+            )
+        with col_sync3:
             st.write("")
             disparar_sync = st.button("🔄 Puxar dados do SGI agora", key="btn_sync_manual")
 
         if disparar_sync:
             try:
                 loja_param = None if loja_sync == "Ambas" else loja_sync
-                disparado_em = github_actions.disparar_sincronizacao(loja=loja_param)
+                data_param = None if data_sync == date.today() else data_sync.strftime("%d/%m/%Y")
+                disparado_em = github_actions.disparar_sincronizacao(loja=loja_param, data=data_param)
                 status_placeholder = st.empty()
                 with st.spinner("Sincronizando com o SGI — isso pode levar alguns minutos..."):
                     sucesso, url_run = github_actions.aguardar_conclusao(

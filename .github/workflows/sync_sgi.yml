@@ -15,6 +15,10 @@ on:
           - ""
           - "Porteira"
           - "Casa de Adubo"
+      data:
+        description: "Data específica DD/MM/AAAA (deixe em branco para hoje)"
+        required: false
+        type: string
 
 jobs:
   sync:
@@ -43,11 +47,14 @@ jobs:
           SGI_EMPRESA_PORTEIRA: ${{ secrets.SGI_EMPRESA_PORTEIRA }}
           SGI_EMPRESA_CASA_ADUBO: ${{ secrets.SGI_EMPRESA_CASA_ADUBO }}
         run: |
+          ARGS=""
           if [ -n "${{ github.event.inputs.loja }}" ]; then
-            python scripts/sync_sgi.py --loja "${{ github.event.inputs.loja }}"
-          else
-            python scripts/sync_sgi.py
+            ARGS="$ARGS --loja \"${{ github.event.inputs.loja }}\""
           fi
+          if [ -n "${{ github.event.inputs.data }}" ]; then
+            ARGS="$ARGS --data \"${{ github.event.inputs.data }}\""
+          fi
+          eval python scripts/sync_sgi.py $ARGS
 
       - name: Guardar screenshots/HTML de depuração (se algo falhar)
         if: always()

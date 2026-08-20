@@ -57,12 +57,17 @@ def _headers():
     }
 
 
-def disparar_sincronizacao(loja=None, ref="main"):
-    """Dispara o workflow sync_sgi.yml (workflow_dispatch) pra rodar agora. Retorna
-    o instante (UTC) do disparo — usado depois pra achar a execução certa entre as
-    runs recentes do workflow."""
+def disparar_sincronizacao(loja=None, data=None, ref="main"):
+    """Dispara o workflow sync_sgi.yml (workflow_dispatch) pra rodar agora — ou
+    pra uma data específica, se `data` for informado (string "DD/MM/AAAA"; padrão
+    é hoje, quando None). Retorna o instante (UTC) do disparo — usado depois pra
+    achar a execução certa entre as runs recentes do workflow."""
     disparado_em = datetime.now(timezone.utc)
-    inputs = {"loja": loja} if loja else {}
+    inputs = {}
+    if loja:
+        inputs["loja"] = loja
+    if data:
+        inputs["data"] = data
     try:
         resp = requests.post(
             f"{API_BASE}/dispatches",

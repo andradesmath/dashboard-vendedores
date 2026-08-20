@@ -47,7 +47,7 @@ Uso:
 import argparse
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ_PROJETO)
@@ -291,21 +291,22 @@ def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim
     return _capturar_pdf_via_clique(page, context, botao_imprimir)
 
 
-def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
+def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, data_alvo=None, headed=False):
     """Abre o navegador, loga no SGI e captura, na MESMA sessão, os dois relatórios
-    do dia (período = hoje): 'Totais de Vendas' e 'Totais de Vendas Por Produto'.
-    Retorna {"vendas": bytes, "produtos": bytes}."""
+    do dia (período = `data_alvo`, ou hoje se não informado): 'Totais de Vendas' e
+    'Totais de Vendas Por Produto'. Retorna {"vendas": bytes, "produtos": bytes}."""
+    data_alvo = data_alvo or date.today()
     browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
     try:
-        hoje_str = date.today().strftime("%d/%m/%Y")
+        data_str = data_alvo.strftime("%d/%m/%Y")
 
         navegar_ate_totais_de_vendas(page)
         _salvar_debug(page, loja, "form_vendas_antes_empresa")
-        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, hoje_str, hoje_str)
+        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_str, data_str)
 
         navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "form_produto_antes_preencher")
-        pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, hoje_str, hoje_str)
+        pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
 
         return {"vendas": pdf_vendas, "produtos": pdf_produtos}
     except Exception:
@@ -365,26 +366,39 @@ def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
           f"'Totais de Vendas Por Produto' para {hoje.strftime('%d/%m/%Y')} — R$ {total_valor:,.2f}.")
 
 
-def sincronizar_loja(playwright, loja, hoje, headed=False):
+def sincronizar_loja(playwright, loja, data_alvo, headed=False):
     url_login = os.environ["SGI_URL_LOGIN"]
     login = os.environ["SGI_LOGIN"]
     senha = os.environ["SGI_SENHA"]
     empresa_texto = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
 
-    print(f"[{loja}] Fazendo login e gerando relatórios de {hoje.strftime('%d/%m/%Y')}...")
-    pdfs = logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
+    print(f"[{loja}] Fazendo login e gerando relatórios de {data_alvo.strftime('%d/%m/%Y')}...")
+    pdfs = logar_e_baixar_relatorios(
+        playwright, loja, url_login, login, senha, empresa_texto, data_alvo=data_alvo, headed=headed
+    )
 
-    _sincronizar_vendas_diarias(loja, hoje, pdfs["vendas"])
-    _sincronizar_vendas_produtos(loja, hoje, pdfs["produtos"])
+    _sincronizar_vendas_diarias(loja, data_alvo, pdfs["vendas"])
+    _sincronizar_vendas_produtos(loja, data_alvo, pdfs["produtos"])
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sincroniza vendas do dia a partir do SGI Solution.")
+    parser = argparse.ArgumentParser(description="Sincroniza vendas de um dia a partir do SGI Solution.")
     parser.add_argument("--loja", choices=list(LOJA_PARA_EMPRESA_ENV.keys()), help="Rodar só uma loja (debug).")
+    parser.add_argument(
+        "--data", help="Data específica a sincronizar, formato DD/MM/AAAA (padrão: hoje).",
+    )
     parser.add_argument("--headed", action="store_true", help="Abre o navegador visível (só faz sentido local).")
     args = parser.parse_args()
 
-    hoje = date.today()
+    if args.data:
+        try:
+            data_alvo = datetime.strptime(args.data, "%d/%m/%Y").date()
+        except ValueError:
+            print(f"Data inválida: '{args.data}' — use o formato DD/MM/AAAA.")
+            sys.exit(1)
+    else:
+        data_alvo = date.today()
+
     lojas = [args.loja] if args.loja else obter_lojas_configuradas()
     if not lojas:
         print(
@@ -397,7 +411,7 @@ def main():
     with sync_playwright() as playwright:
         for loja in lojas:
             try:
-                sincronizar_loja(playwright, loja, hoje, headed=args.headed)
+                sincronizar_loja(playwright, loja, data_alvo, headed=args.headed)
             except Exception as e:
                 erros.append(f"{loja}: {e}")
                 print(f"[{loja}] ERRO: {e}")
