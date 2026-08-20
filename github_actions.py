@@ -23,8 +23,12 @@ from datetime import datetime, timezone
 import requests
 
 REPO = "andradesmath/dashboard-vendedores"
-WORKFLOW_ARQUIVO = "sync_sgi.yml"
-API_BASE = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW_ARQUIVO}"
+WORKFLOW_SYNC_DIARIO = "sync_sgi.yml"
+WORKFLOW_BACKFILL_PRODUTOS = "backfill_produtos.yml"
+
+
+def _api_base(workflow_arquivo):
+    return f"https://api.github.com/repos/{REPO}/actions/workflows/{workflow_arquivo}"
 
 
 class SincronizacaoIndisponivel(Exception):
@@ -57,22 +61,16 @@ def _headers():
     }
 
 
-def disparar_sincronizacao(loja=None, data=None, ref="main"):
-    """Dispara o workflow sync_sgi.yml (workflow_dispatch) pra rodar agora — ou
-    pra uma data específica, se `data` for informado (string "DD/MM/AAAA"; padrão
-    é hoje, quando None). Retorna o instante (UTC) do disparo — usado depois pra
-    achar a execução certa entre as runs recentes do workflow."""
+def disparar_workflow(workflow_arquivo, inputs=None, ref="main"):
+    """Dispara qualquer um dos workflows (workflow_dispatch) pra rodar agora.
+    Retorna o instante (UTC) do disparo — usado depois pra achar a execução certa
+    entre as runs recentes desse workflow."""
     disparado_em = datetime.now(timezone.utc)
-    inputs = {}
-    if loja:
-        inputs["loja"] = loja
-    if data:
-        inputs["data"] = data
     try:
         resp = requests.post(
-            f"{API_BASE}/dispatches",
+            f"{_api_base(workflow_arquivo)}/dispatches",
             headers=_headers(),
-            json={"ref": ref, "inputs": inputs},
+            json={"ref": ref, "inputs": inputs or {}},
             timeout=20,
         )
     except requests.RequestException as e:
@@ -86,9 +84,30 @@ def disparar_sincronizacao(loja=None, data=None, ref="main"):
     return disparado_em
 
 
-def _achar_run_disparada(disparado_em):
+def disparar_sincronizacao(loja=None, data=None, ref="main"):
+    """Dispara o workflow sync_sgi.yml pra rodar agora — ou pra uma data
+    específica, se `data` for informado (string "DD/MM/AAAA"; padrão é hoje,
+    quando None)."""
+    inputs = {}
+    if loja:
+        inputs["loja"] = loja
+    if data:
+        inputs["data"] = data
+    return disparar_workflow(WORKFLOW_SYNC_DIARIO, inputs=inputs, ref=ref)
+
+
+def disparar_backfill_mes(ano, mes, loja=None, ref="main"):
+    """Dispara o workflow backfill_produtos.yml pra reprocessar só UM mês (ano/mes)
+    de Vendas por Produto — sem rodar o histórico completo de novo."""
+    inputs = {"ano": str(ano), "mes": str(mes)}
+    if loja:
+        inputs["loja"] = loja
+    return disparar_workflow(WORKFLOW_BACKFILL_PRODUTOS, inputs=inputs, ref=ref)
+
+
+def _achar_run_disparada(workflow_arquivo, disparado_em):
     resp = requests.get(
-        f"{API_BASE}/runs",
+        f"{_api_base(workflow_arquivo)}/runs",
         headers=_headers(),
         params={"event": "workflow_dispatch", "per_page": 5},
         timeout=20,
@@ -101,10 +120,11 @@ def _achar_run_disparada(disparado_em):
     return None
 
 
-def aguardar_conclusao(disparado_em, timeout_s=280, intervalo_s=6, callback_status=None):
-    """Espera a execução disparada em `disparado_em` terminar, dando poll na API do
-    GitHub Actions. `callback_status(texto)` é chamado a cada checagem, se
-    informado (pra atualizar um st.spinner/st.caption na tela).
+def aguardar_conclusao(disparado_em, workflow_arquivo=WORKFLOW_SYNC_DIARIO, timeout_s=280, intervalo_s=6, callback_status=None):
+    """Espera a execução disparada em `disparado_em` (do workflow `workflow_arquivo`)
+    terminar, dando poll na API do GitHub Actions. `callback_status(texto)` é
+    chamado a cada checagem, se informado (pra atualizar um st.spinner/st.caption
+    na tela).
 
     Retorna (sucesso, url_run):
       sucesso=True  -> terminou com sucesso.
@@ -114,10 +134,10 @@ def aguardar_conclusao(disparado_em, timeout_s=280, intervalo_s=6, callback_stat
     inicio = time.monotonic()
     run = None
     while run is None and time.monotonic() - inicio < timeout_s:
-        run = _achar_run_disparada(disparado_em)
+        run = _achar_run_disparada(workflow_arquivo, disparado_em)
         if run is None:
             if callback_status:
-                callback_status("Aguardando o GitHub Actions iniciar a sincronização...")
+                callback_status("Aguardando o GitHub Actions iniciar...")
             time.sleep(intervalo_s)
 
     if run is None:

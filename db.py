@@ -1522,6 +1522,108 @@ def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", 
     return df
 
 
+@cache_leitura()
+def get_resumo_produtos_mes(ano, mes, loja=None):
+    """KPIs gerais de Vendas por Produto no mês: faturamento total, quantidade
+    total de itens vendidos, ticket médio por item (faturamento ÷ qtd) e a
+    contagem de produtos/fornecedores/marcas distintos que tiveram venda no
+    período — a base de qualquer análise de portfólio de produtos."""
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    query = """
+        SELECT
+            COALESCE(SUM(vp.valor_total), 0) AS faturamento_total,
+            COALESCE(SUM(vp.qtd), 0) AS qtd_total,
+            COUNT(DISTINCT vp.cod_produto) AS n_produtos,
+            COUNT(DISTINCT NULLIF(vp.fornecedor, '')) AS n_fornecedores,
+            COUNT(DISTINCT NULLIF(vp.marca, '')) AS n_marcas
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    row = df.iloc[0]
+    faturamento_total = float(row["faturamento_total"])
+    qtd_total = float(row["qtd_total"])
+    return {
+        "faturamento_total": faturamento_total,
+        "qtd_total": qtd_total,
+        "ticket_medio_item": (faturamento_total / qtd_total) if qtd_total > 0 else 0.0,
+        "n_produtos": int(row["n_produtos"]),
+        "n_fornecedores": int(row["n_fornecedores"]),
+        "n_marcas": int(row["n_marcas"]),
+    }
+
+
+@cache_leitura()
+def get_curva_abc_produtos(ano, mes, loja=None):
+    """Curva ABC dos produtos vendidos no mês — a régua clássica de gestão de
+    portfólio/estoque (princípio de Pareto aplicado a produto): ordena por
+    faturamento decrescente, calcula o % de participação e o % acumulado de cada
+    produto, e classifica em:
+      A — produtos que, somados, respondem pelos primeiros 80% do faturamento
+          (o "poucos produtos que fazem a diferença", merecem atenção prioritária
+          de estoque/negociação com fornecedor);
+      B — de 80% a 95% acumulado (relevância intermediária);
+      C — os últimos 5% (cauda longa, muitos produtos com pouca representatividade
+          individual — candidatos a revisão de mix)."""
+    cols = [
+        "cod_produto", "descricao_produto", "marca", "fornecedor",
+        "qtd_total", "valor_total", "pct_participacao", "pct_acumulado", "classe",
+    ]
+    df = get_produtos_mais_vendidos(ano, mes, loja=loja, top_n=100000)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = df.sort_values("valor_total", ascending=False).reset_index(drop=True)
+    total = df["valor_total"].sum()
+    if total <= 0:
+        return pd.DataFrame(columns=cols)
+
+    df["pct_participacao"] = df["valor_total"] / total * 100
+    df["pct_acumulado"] = df["pct_participacao"].cumsum()
+
+    def _classificar(pct_acum):
+        if pct_acum <= 80:
+            return "A"
+        elif pct_acum <= 95:
+            return "B"
+        return "C"
+
+    df["classe"] = df["pct_acumulado"].apply(_classificar)
+    return df[cols]
+
+
+@cache_leitura()
+def get_comparativo_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", top_n=10):
+    """Ranking por marca/fornecedor do mês (ver get_ranking_marca_fornecedor), com
+    o faturamento do mês anterior ao lado e o % de crescimento — identifica quem
+    está em alta ou em queda, não só o tamanho absoluto."""
+    ano_ant, mes_ant = mes_anterior(ano, mes)
+    atual = get_ranking_marca_fornecedor(ano, mes, loja=loja, agrupar_por=agrupar_por, top_n=top_n)
+    cols = list(atual.columns) + ["valor_total_anterior", "crescimento_pct"]
+    if atual.empty:
+        return pd.DataFrame(columns=cols)
+
+    anterior = get_ranking_marca_fornecedor(ano_ant, mes_ant, loja=loja, agrupar_por=agrupar_por, top_n=100000)
+    anterior_lookup = anterior.set_index("grupo")["valor_total"].to_dict() if not anterior.empty else {}
+
+    atual = atual.copy()
+    atual["valor_total_anterior"] = atual["grupo"].map(anterior_lookup).fillna(0.0)
+    atual["crescimento_pct"] = atual.apply(
+        lambda r: (
+            (r["valor_total"] - r["valor_total_anterior"]) / r["valor_total_anterior"] * 100
+        ) if r["valor_total_anterior"] > 0 else None,
+        axis=1,
+    )
+    return atual
+
+
 # --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------

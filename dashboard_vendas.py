@@ -803,6 +803,57 @@ with tab_lancamentos:
             except github_actions.SincronizacaoIndisponivel as e:
                 st.error(str(e))
 
+    with st.expander("📦 Reprocessar um mês de Vendas por Produto", expanded=False):
+        st.caption(
+            "Puxa de novo o relatório 'Totais de Vendas Por Produto' de UM MÊS inteiro específico "
+            "(útil pra corrigir/completar um mês do histórico sem rodar o backfill todo de novo). "
+            "Mesmo tempo de espera do botão acima — roda no GitHub Actions."
+        )
+        col_bf1, col_bf2, col_bf3, col_bf4 = st.columns([1, 1, 1, 1.4])
+        with col_bf1:
+            loja_bf = st.selectbox("Loja", ["Ambas"] + db.LOJAS, key="loja_backfill_mes")
+        with col_bf2:
+            ano_bf = st.number_input(
+                "Ano", min_value=2024, max_value=date.today().year, value=date.today().year,
+                step=1, key="ano_backfill_mes",
+            )
+        with col_bf3:
+            mes_bf = st.selectbox(
+                "Mês", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                index=date.today().month - 1, key="mes_backfill_mes",
+            )
+        with col_bf4:
+            st.write("")
+            disparar_bf = st.button("📦 Puxar esse mês agora", key="btn_backfill_mes")
+
+        if disparar_bf:
+            try:
+                loja_bf_param = None if loja_bf == "Ambas" else loja_bf
+                disparado_em_bf = github_actions.disparar_backfill_mes(
+                    int(ano_bf), int(mes_bf), loja=loja_bf_param
+                )
+                status_placeholder_bf = st.empty()
+                with st.spinner(f"Puxando {db.MESES_PT[int(mes_bf)]}/{int(ano_bf)} do SGI..."):
+                    sucesso_bf, url_run_bf = github_actions.aguardar_conclusao(
+                        disparado_em_bf,
+                        workflow_arquivo=github_actions.WORKFLOW_BACKFILL_PRODUTOS,
+                        callback_status=status_placeholder_bf.caption,
+                    )
+                if sucesso_bf:
+                    db.limpar_cache()
+                    st.success("Mês reprocessado! Atualizando os números...")
+                    st.session_state.versao_dados += 1
+                    st.rerun()
+                elif sucesso_bf is False:
+                    st.error(f"Terminou com erro. Veja os detalhes/logs em: {url_run_bf}")
+                else:
+                    st.warning(
+                        f"Ainda não terminou depois de alguns minutos — pode continuar rodando. "
+                        f"Acompanhe em: {url_run_bf}"
+                    )
+            except github_actions.SincronizacaoIndisponivel as e:
+                st.error(str(e))
+
     st.markdown("---")
     st.subheader("Lançamento diário de vendas")
     vendedores_df = db.get_vendedores(apenas_ativos=True)
@@ -2280,11 +2331,66 @@ with tab_dashboard:
     def _fmt_qtd(v):
         return f"{v:,.0f}".replace(",", ".")
 
-    produtos_top_df = db.get_produtos_mais_vendidos(ano_filtro, mes_filtro, loja=loja_filtro, top_n=15)
-    if produtos_top_df.empty:
+    def _fmt_pct_sinal(v):
+        if v is None or pd.isna(v):
+            return "—"
+        seta = "▲" if v >= 0 else "▼"
+        return f"{seta} {v:.1f}%"
+
+    resumo_prod = db.get_resumo_produtos_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+
+    if resumo_prod["n_produtos"] == 0:
         st.info("Nenhuma venda por produto lançada para o filtro selecionado.")
     else:
+        st.markdown("##### Indicadores do mês")
+        p1, p2, p3, p4, p5 = st.columns(5)
+        kpi_card(p1, "Faturamento em Produtos", db.formatar_moeda(resumo_prod["faturamento_total"]), cor=VERDE)
+        kpi_card(p2, "Itens Vendidos", _fmt_qtd(resumo_prod["qtd_total"]))
+        kpi_card(p3, "Ticket Médio por Item", db.formatar_moeda(resumo_prod["ticket_medio_item"]))
+        kpi_card(p4, "Produtos Distintos (SKUs)", str(resumo_prod["n_produtos"]))
+        kpi_card(p5, "Fornecedores / Marcas", f"{resumo_prod['n_fornecedores']} / {resumo_prod['n_marcas']}")
+
+        st.markdown("##### Curva ABC de produtos")
+        st.caption(
+            "Classificação clássica de portfólio (Pareto): produtos ordenados por faturamento, "
+            "com % acumulado. Classe A = os produtos que juntos somam os primeiros 80% do "
+            "faturamento (prioridade de estoque/negociação); B = de 80% a 95%; C = os últimos "
+            "5% (cauda longa — muitos itens com pouca representatividade individual)."
+        )
+        curva_abc_df = db.get_curva_abc_produtos(ano_filtro, mes_filtro, loja=loja_filtro)
+        if curva_abc_df.empty:
+            st.info("Sem dado suficiente para montar a curva ABC.")
+        else:
+            contagem_classe = curva_abc_df["classe"].value_counts()
+            valor_classe = curva_abc_df.groupby("classe")["valor_total"].sum()
+            ca1, ca2, ca3 = st.columns(3)
+            for col, classe, cor_classe in [(ca1, "A", VERDE), (ca2, "B", "#f39c12"), (ca3, "C", "#888888")]:
+                n_itens = int(contagem_classe.get(classe, 0))
+                valor_itens = float(valor_classe.get(classe, 0.0))
+                kpi_card(
+                    col, f"Classe {classe}",
+                    f"{n_itens} produto(s) — {db.formatar_moeda(valor_itens)}",
+                    cor=cor_classe,
+                )
+            with st.expander("Ver tabela completa da Curva ABC", expanded=False):
+                abc_fmt = curva_abc_df.copy()
+                abc_fmt["Qtd"] = abc_fmt["qtd_total"].apply(_fmt_qtd)
+                abc_fmt["Valor Total"] = abc_fmt["valor_total"].apply(db.formatar_moeda)
+                abc_fmt["Participação"] = abc_fmt["pct_participacao"].apply(lambda v: f"{v:.2f}%")
+                abc_fmt["Acumulado"] = abc_fmt["pct_acumulado"].apply(lambda v: f"{v:.2f}%")
+                st.dataframe(
+                    abc_fmt[[
+                        "cod_produto", "descricao_produto", "marca", "fornecedor",
+                        "Qtd", "Valor Total", "Participação", "Acumulado", "classe",
+                    ]].rename(columns={
+                        "cod_produto": "Cód.", "descricao_produto": "Produto",
+                        "marca": "Marca", "fornecedor": "Fornecedor", "classe": "Classe",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
         st.markdown("##### Produtos mais vendidos (geral)")
+        produtos_top_df = db.get_produtos_mais_vendidos(ano_filtro, mes_filtro, loja=loja_filtro, top_n=15)
         produtos_fmt = produtos_top_df.copy()
         produtos_fmt["Qtd"] = produtos_fmt["qtd_total"].apply(_fmt_qtd)
         produtos_fmt["Valor Total"] = produtos_fmt["valor_total"].apply(db.formatar_moeda)
@@ -2316,11 +2422,11 @@ with tab_dashboard:
                 use_container_width=True, hide_index=True,
             )
 
-        st.markdown("##### Ranking por marca / fornecedor")
+        st.markdown("##### Ranking por marca / fornecedor — com crescimento vs mês anterior")
         col_rk1, col_rk2 = st.columns(2)
         with col_rk1:
             st.write("**Por Fornecedor**")
-            rank_forn_df = db.get_ranking_marca_fornecedor(
+            rank_forn_df = db.get_comparativo_marca_fornecedor(
                 ano_filtro, mes_filtro, loja=loja_filtro, agrupar_por="fornecedor", top_n=10
             )
             if rank_forn_df.empty:
@@ -2328,13 +2434,14 @@ with tab_dashboard:
             else:
                 rank_forn_fmt = rank_forn_df.copy()
                 rank_forn_fmt["Valor Total"] = rank_forn_fmt["valor_total"].apply(db.formatar_moeda)
+                rank_forn_fmt["Crescimento"] = rank_forn_fmt["crescimento_pct"].apply(_fmt_pct_sinal)
                 st.dataframe(
-                    rank_forn_fmt[["grupo", "Valor Total"]].rename(columns={"grupo": "Fornecedor"}),
+                    rank_forn_fmt[["grupo", "Valor Total", "Crescimento"]].rename(columns={"grupo": "Fornecedor"}),
                     use_container_width=True, hide_index=True,
                 )
         with col_rk2:
             st.write("**Por Marca**")
-            rank_marca_df = db.get_ranking_marca_fornecedor(
+            rank_marca_df = db.get_comparativo_marca_fornecedor(
                 ano_filtro, mes_filtro, loja=loja_filtro, agrupar_por="marca", top_n=10
             )
             if rank_marca_df.empty:
@@ -2342,10 +2449,16 @@ with tab_dashboard:
             else:
                 rank_marca_fmt = rank_marca_df.copy()
                 rank_marca_fmt["Valor Total"] = rank_marca_fmt["valor_total"].apply(db.formatar_moeda)
+                rank_marca_fmt["Crescimento"] = rank_marca_fmt["crescimento_pct"].apply(_fmt_pct_sinal)
                 st.dataframe(
-                    rank_marca_fmt[["grupo", "Valor Total"]].rename(columns={"grupo": "Marca"}),
+                    rank_marca_fmt[["grupo", "Valor Total", "Crescimento"]].rename(columns={"grupo": "Marca"}),
                     use_container_width=True, hide_index=True,
                 )
+        st.caption(
+            "Crescimento = variação do faturamento do grupo (fornecedor/marca) vs o mesmo grupo "
+            "no mês anterior. Sem % quando o grupo não teve venda no mês anterior (nada pra "
+            "comparar)."
+        )
 
     st.markdown("---")
 

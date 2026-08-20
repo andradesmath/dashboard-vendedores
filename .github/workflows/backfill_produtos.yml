@@ -14,6 +14,14 @@ on:
           - ""
           - "Porteira"
           - "Casa de Adubo"
+      ano:
+        description: "Ano do mês específico a reprocessar (deixe em branco pra rodar o histórico completo: set/2025 até hoje)"
+        required: false
+        type: string
+      mes:
+        description: "Mês específico, 1-12 (usar junto com 'ano')"
+        required: false
+        type: string
 
 jobs:
   backfill:
@@ -44,11 +52,14 @@ jobs:
           SGI_EMPRESA_PORTEIRA: ${{ secrets.SGI_EMPRESA_PORTEIRA }}
           SGI_EMPRESA_CASA_ADUBO: ${{ secrets.SGI_EMPRESA_CASA_ADUBO }}
         run: |
+          ARGS=""
           if [ -n "${{ github.event.inputs.loja }}" ]; then
-            python scripts/backfill_produtos.py --loja "${{ github.event.inputs.loja }}"
-          else
-            python scripts/backfill_produtos.py
+            ARGS="$ARGS --loja \"${{ github.event.inputs.loja }}\""
           fi
+          if [ -n "${{ github.event.inputs.ano }}" ] && [ -n "${{ github.event.inputs.mes }}" ]; then
+            ARGS="$ARGS --ano ${{ github.event.inputs.ano }} --mes ${{ github.event.inputs.mes }}"
+          fi
+          eval python scripts/backfill_produtos.py $ARGS
 
       - name: Guardar screenshots/HTML de depuração (se algo falhar)
         if: always()
