@@ -37,11 +37,15 @@ import os
 import sys
 from datetime import date
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, RAIZ_PROJETO)
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Caminho explícito (não depende de busca automática por diretório de
+    # trabalho/pilha de chamadas) — o .env sempre fica na raiz do projeto, um
+    # nível acima da pasta scripts/.
+    load_dotenv(os.path.join(RAIZ_PROJETO, ".env"))
 except ImportError:
     pass
 
@@ -94,6 +98,63 @@ def _preencher_por_label_ou_placeholder(page, rotulos, valor):
     return False
 
 
+def selecionar_empresa_dropdown_customizado(page, empresa_texto):
+    """Seleciona a empresa num dropdown customizado tipo 'clique pra abrir, digite
+    pra filtrar, clique na opção' (visto no formulário 'Totais de Vendas' — mostra
+    uma caixa de busca e uma lista de empresas ao clicar, não é um <select> comum,
+    então select_option() não funciona nele). Tenta várias estratégias em sequência
+    porque não foi possível inspecionar o componente ao vivo durante o
+    desenvolvimento."""
+    # Se a empresa certa já estiver selecionada (texto já visível na tela), não
+    # precisa fazer nada.
+    if page.get_by_text(empresa_texto, exact=True).count() > 0:
+        try:
+            # confere se já está marcada/selecionada e não só listada como opção
+            if page.locator(f"text='{empresa_texto}'").first.locator(
+                "xpath=ancestor-or-self::*[contains(@class,'selected') or contains(@class,'active')]"
+            ).count() > 0:
+                return
+        except Exception:
+            pass
+
+    abriu = False
+    for tentativa in (
+        lambda: page.get_by_label("Empresa", exact=False).first,
+        lambda: page.get_by_text("Empresa", exact=True).first.locator("xpath=following::*[1]"),
+        lambda: page.get_by_text("Empresa", exact=True).first,
+    ):
+        try:
+            campo = tentativa()
+            if campo.count() > 0:
+                campo.click(timeout=5000)
+                abriu = True
+                break
+        except Exception:
+            continue
+
+    if not abriu:
+        print("  aviso: não consegui clicar no campo 'Empresa' do formulário de relatório.")
+        return
+
+    page.wait_for_timeout(400)
+
+    # Se abriu uma caixa de busca dentro do dropdown, filtra pelo texto da empresa.
+    try:
+        caixa_busca = page.locator("input[type='text']:visible").last
+        if caixa_busca.count() > 0:
+            caixa_busca.fill(empresa_texto)
+            page.wait_for_timeout(400)
+    except Exception:
+        pass
+
+    # Clica na opção com o texto exato da empresa (a última ocorrência costuma ser
+    # a do menu aberto, não a do rótulo/valor atual do campo).
+    try:
+        page.get_by_text(empresa_texto, exact=True).last.click(timeout=5000)
+    except Exception as e:
+        print(f"  aviso: não consegui clicar na opção '{empresa_texto}' no dropdown de Empresa: {e}")
+
+
 def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
     """Abre o navegador, loga no SGI, navega até Vendas > Totais de Vendas, ajusta o
     período pro dia de hoje e captura o PDF gerado. Retorna os bytes do PDF."""
@@ -128,7 +189,14 @@ def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto,
         page.get_by_text("Totais de Vendas", exact=True).first.click()
         page.wait_for_load_state("domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
-        _salvar_debug(page, loja, "form_relatorio")
+        _salvar_debug(page, loja, "form_relatorio_antes_empresa")
+
+        # ---- 2.1) Campo "Empresa" DENTRO do formulário do relatório ----
+        # É um dropdown customizado (não um <select> nativo) — o valor pode não
+        # acompanhar a empresa escolhida no login, então sempre clicamos e
+        # selecionamos explicitamente a empresa certa aqui também.
+        selecionar_empresa_dropdown_customizado(page, empresa_texto)
+        _salvar_debug(page, loja, "form_relatorio_depois_empresa")
 
         # ---- 3) Período = hoje até hoje ----
         hoje_str = date.today().strftime("%d/%m/%Y")

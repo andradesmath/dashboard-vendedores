@@ -1,0 +1,62 @@
+name: Sincronizar vendas do SGI
+
+on:
+  schedule:
+    # Brasília não observa horário de verão (fixo em UTC-3) -> 12h e 19h BRT = 15h e 22h UTC.
+    - cron: "0 15 * * *"
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+    inputs:
+      loja:
+        description: "Rodar só uma loja (deixe em branco para todas as configuradas)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "Porteira"
+          - "Casa de Adubo"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements-sync.txt
+          playwright install --with-deps chromium
+
+      - name: Rodar sincronização
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SGI_URL_LOGIN: ${{ secrets.SGI_URL_LOGIN }}
+          SGI_LOGIN: ${{ secrets.SGI_LOGIN }}
+          SGI_SENHA: ${{ secrets.SGI_SENHA }}
+          SGI_EMPRESA_PORTEIRA: ${{ secrets.SGI_EMPRESA_PORTEIRA }}
+          SGI_EMPRESA_CASA_ADUBO: ${{ secrets.SGI_EMPRESA_CASA_ADUBO }}
+        run: |
+          if [ -n "${{ github.event.inputs.loja }}" ]; then
+            python scripts/sync_sgi.py --loja "${{ github.event.inputs.loja }}"
+          else
+            python scripts/sync_sgi.py
+          fi
+
+      - name: Guardar screenshots/HTML de depuração (se algo falhar)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-sync-sgi-${{ github.run_id }}
+          path: |
+            debug_*.png
+            debug_*.html
+            debug_*.pdf
+          if-no-files-found: ignore
+          retention-days: 7

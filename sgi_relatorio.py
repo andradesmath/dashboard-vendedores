@@ -40,14 +40,18 @@ def extrair_texto_pdf(arquivo_bytes):
 
 
 PADRAO_NUM_PDF = re.compile(r"^-?[\d.,]+%?$")
-NOME_MAX_TOKENS_PDF = 4
+NOME_MAX_TOKENS_PDF = 5
 
 
 def _eh_token_nome_pdf(token):
     """Um token só conta como parte do nome do vendedor se: não for numérico, não
     tiver ':' nem '.' (evita rótulos de cabeçalho como 'C.', 'T.', 'Nº:') e estiver
     todo em maiúsculas (os nomes no relatório do SGI vêm em CAIXA ALTA; os rótulos de
-    coluna do cabeçalho, como 'Vendedor', 'Desc', 'Verba', vêm em Title Case)."""
+    coluna do cabeçalho, como 'Vendedor', 'Desc', 'Verba', vêm em Title Case). Um '-'
+    isolado também conta — alguns vendedores aparecem como 'NOME - CARGO' (ex.:
+    'ALINE - GERENTE'), e precisamos capturar o nome inteiro pra depois normalizar."""
+    if token == "-":
+        return True
     return (
         not PADRAO_NUM_PDF.match(token) and ":" not in token and "." not in token and token.isupper()
     )
@@ -117,10 +121,14 @@ def parse_relatorio_vendas_pdf(arquivo_bytes):
 
 
 def normalizar_nome_match(texto):
-    """Normaliza um nome para comparação: maiúsculas, sem espaços — evita falha de
-    match por causa de espaçamento diferente entre o PDF e o cadastro (inclusive
-    quando a extração do PDF gruda duas palavras do nome sem espaço)."""
-    return re.sub(r"\s+", "", texto.strip().upper())
+    """Normaliza um nome para comparação: maiúsculas, sem espaços, sem sufixo de
+    cargo (ex.: 'ALINE - GERENTE' vira 'ALINE') — evita falha de match por causa de
+    espaçamento diferente entre o PDF e o cadastro, ou de cargo anexado ao nome no
+    SGI (inclusive quando a extração do PDF gruda duas palavras do nome sem
+    espaço)."""
+    texto = texto.strip().upper()
+    texto = texto.split(" - ")[0].strip()
+    return re.sub(r"\s+", "", texto)
 
 
 def casar_vendedores(linhas_pdf, vendedores_df):
