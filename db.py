@@ -242,6 +242,16 @@ def init_db():
         """,
     ]
     with get_engine().begin() as conn:
+        # Trava (só durante esta transação) pra impedir que duas instâncias rodem as
+        # migrações do schema ao mesmo tempo — ex.: o painel no Streamlit Cloud
+        # acordando de "sleep" e o script de sincronização (scripts/sync_sgi.py, que
+        # também chama db.init_db() ao importar db) batendo no banco juntos. Sem essa
+        # trava, "CREATE TABLE IF NOT EXISTS" concorrente pode disparar uma condição
+        # de corrida conhecida do Postgres (erro de chave duplicada em pg_type) na
+        # primeira vez que uma tabela nova é criada. pg_advisory_xact_lock libera
+        # sozinho no fim da transação, sem risco de ficar "preso" com o pool de
+        # conexões reaproveitando conexões.
+        conn.execute(text("SELECT pg_advisory_xact_lock(727271)"))
         for stmt in migracoes_pre:
             conn.execute(text(stmt))
         for stmt in ddl:
