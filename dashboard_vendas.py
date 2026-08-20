@@ -2223,6 +2223,86 @@ with tab_dashboard:
 
     st.markdown("---")
 
+    # ---- Vendas por Produto ----
+    st.markdown("### 🛒 Vendas por Produto")
+    st.caption(
+        "Baseado no relatório 'Totais de Vendas Por Produto' do SGI, sincronizado "
+        "automaticamente junto com as vendas diárias (12h e 19h). Sem dado até a primeira "
+        "sincronização desse relatório rodar."
+    )
+
+    def _fmt_qtd(v):
+        return f"{v:,.0f}".replace(",", ".")
+
+    produtos_top_df = db.get_produtos_mais_vendidos(ano_filtro, mes_filtro, loja=loja_filtro, top_n=15)
+    if produtos_top_df.empty:
+        st.info("Nenhuma venda por produto lançada para o filtro selecionado.")
+    else:
+        st.markdown("##### Produtos mais vendidos (geral)")
+        produtos_fmt = produtos_top_df.copy()
+        produtos_fmt["Qtd"] = produtos_fmt["qtd_total"].apply(_fmt_qtd)
+        produtos_fmt["Valor Total"] = produtos_fmt["valor_total"].apply(db.formatar_moeda)
+        st.dataframe(
+            produtos_fmt[["cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total"]]
+            .rename(columns={
+                "cod_produto": "Cód.", "descricao_produto": "Produto",
+                "marca": "Marca", "fornecedor": "Fornecedor",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+        st.markdown("##### Produtos mais vendidos por vendedor")
+        top_vend_df = db.get_produtos_mais_vendidos_por_vendedor(ano_filtro, mes_filtro, loja=loja_filtro, top_n=5)
+        if top_vend_df.empty:
+            st.info("Nenhuma venda por produto lançada para o filtro selecionado.")
+        else:
+            opcoes_vend_prod = sorted(top_vend_df["nome"].unique().tolist())
+            vendedor_sel_prod = st.selectbox("Vendedor", opcoes_vend_prod, key="sel_vendedor_produtos")
+            sub_vend = top_vend_df[top_vend_df["nome"] == vendedor_sel_prod].copy()
+            sub_vend["Qtd"] = sub_vend["qtd_total"].apply(_fmt_qtd)
+            sub_vend["Valor Total"] = sub_vend["valor_total"].apply(db.formatar_moeda)
+            st.dataframe(
+                sub_vend[["cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total"]]
+                .rename(columns={
+                    "cod_produto": "Cód.", "descricao_produto": "Produto",
+                    "marca": "Marca", "fornecedor": "Fornecedor",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+        st.markdown("##### Ranking por marca / fornecedor")
+        col_rk1, col_rk2 = st.columns(2)
+        with col_rk1:
+            st.write("**Por Fornecedor**")
+            rank_forn_df = db.get_ranking_marca_fornecedor(
+                ano_filtro, mes_filtro, loja=loja_filtro, agrupar_por="fornecedor", top_n=10
+            )
+            if rank_forn_df.empty:
+                st.info("Sem dado de fornecedor no período.")
+            else:
+                rank_forn_fmt = rank_forn_df.copy()
+                rank_forn_fmt["Valor Total"] = rank_forn_fmt["valor_total"].apply(db.formatar_moeda)
+                st.dataframe(
+                    rank_forn_fmt[["grupo", "Valor Total"]].rename(columns={"grupo": "Fornecedor"}),
+                    use_container_width=True, hide_index=True,
+                )
+        with col_rk2:
+            st.write("**Por Marca**")
+            rank_marca_df = db.get_ranking_marca_fornecedor(
+                ano_filtro, mes_filtro, loja=loja_filtro, agrupar_por="marca", top_n=10
+            )
+            if rank_marca_df.empty:
+                st.info("Sem dado de marca no período.")
+            else:
+                rank_marca_fmt = rank_marca_df.copy()
+                rank_marca_fmt["Valor Total"] = rank_marca_fmt["valor_total"].apply(db.formatar_moeda)
+                st.dataframe(
+                    rank_marca_fmt[["grupo", "Valor Total"]].rename(columns={"grupo": "Marca"}),
+                    use_container_width=True, hide_index=True,
+                )
+
+    st.markdown("---")
+
     # ---- Exportação em PDF ----
     st.markdown("### 📄 Exportar indicadores em PDF")
     st.caption(

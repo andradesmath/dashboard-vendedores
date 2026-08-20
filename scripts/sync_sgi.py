@@ -1,8 +1,13 @@
 """
-scripts/sync_sgi.py - Sincroniza as vendas do dia a partir do SGI Solution
-(login + relatório "Totais de Vendas") direto no Postgres do painel, seguindo o
-roteiro: Login -> Vendas -> Totais de Vendas -> período = hoje -> gerar PDF ->
-extrair Nº Ped e T. Liq. por vendedor cadastrado.
+scripts/sync_sgi.py - Sincroniza as vendas do dia a partir do SGI Solution direto
+no Postgres do painel, puxando DOIS relatórios na mesma sessão logada:
+  1) "Totais de Vendas" -> Nº Ped e T. Liq. por vendedor (vendas_diarias).
+  2) "Totais de Vendas Por Produto" -> produtos vendidos por vendedor, com
+     marca/fornecedor (vendas_produtos_diarias) — agrupamento sempre
+     "Vendedor/Produto".
+
+Roteiro de cada um: Login -> Vendas -> <relatório> -> período = hoje -> gerar
+PDF -> extrair dados.
 
 Pensado para rodar via GitHub Actions (agendado às 12h e 19h de Brasília), mas
 roda local também para testar/depurar.
@@ -10,9 +15,11 @@ roda local também para testar/depurar.
 IMPORTANTE: como não foi possível inspecionar o site ao vivo durante o
 desenvolvimento (a página trava carregando na sessão usada para construir isso, e
 por política eu não insiro senha em formulários de qualquer forma), os seletores
-abaixo foram escritos com base nas TELAS do roteiro em PDF enviado, com múltiplas
-estratégias de fallback e captura de screenshot/HTML a cada etapa em caso de erro.
-É bem provável que a primeira execução precise de um ajuste fino — rode com
+abaixo foram escritos com base nas TELAS dos roteiros em PDF enviados, com
+múltiplas estratégias de fallback e captura de screenshot/HTML a cada etapa em
+caso de erro. O parser do relatório de produtos foi validado direto contra um PDF
+real gerado pelo usuário (bate 100% com os totais impressos); a NAVEGAÇÃO até esse
+relatório (cliques, campo "Agrupamento") ainda não foi testada ao vivo — rode com
 `--headed` localmente ou dispare o workflow manualmente (workflow_dispatch) no
 GitHub Actions e envie os screenshots salvos em debug_*.png se algo falhar.
 
@@ -24,7 +31,7 @@ Variáveis de ambiente necessárias (Secrets no GitHub, ou .env local para teste
     SGI_EMPRESA_PORTEIRA    - texto exato da opção "Empresa" no login p/ Porteira
                               (confirmado: "PORTEIRA AGROCOMERCIAL")
     SGI_EMPRESA_CASA_ADUBO  - texto exato da opção "Empresa" no login p/ Casa de
-                              Adubo (confirme no dropdown do site)
+                              Adubo (confirmado: "CASA DE ADUBOS CAFE BOM")
 Só sincroniza as lojas cuja variável SGI_EMPRESA_* estiver definida.
 
 Uso:
@@ -50,7 +57,12 @@ except ImportError:
     pass
 
 import db  # noqa: E402
-from sgi_relatorio import casar_vendedores, parse_relatorio_vendas_pdf  # noqa: E402
+from sgi_relatorio import (  # noqa: E402
+    casar_produtos_vendedores,
+    casar_vendedores,
+    parse_relatorio_produtos_pdf,
+    parse_relatorio_vendas_pdf,
+)
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
@@ -111,9 +123,86 @@ def selecionar_empresa_no_formulario(page, empresa_texto):
     select_locator.select_option(label=empresa_texto, timeout=10000)
 
 
-def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
-    """Abre o navegador, loga no SGI, navega até Vendas > Totais de Vendas, ajusta o
-    período pro dia de hoje e captura o PDF gerado. Retorna os bytes do PDF."""
+def selecionar_agrupamento_vendedor_produto(page):
+    """Garante que o campo 'Agrupamento' do formulário 'Totais de Vendas Por
+    Produto' esteja em 'Vendedor/Produto' — exigência explícita do usuário, é o
+    agrupamento que faz o relatório trazer uma seção por vendedor com os produtos
+    dele (sem isso o relatório sai no formato errado pro parser). Tenta como
+    <select> nativo primeiro (mesmo padrão do campo 'Empresa' do outro relatório);
+    se não for, trata como dropdown customizado: clica no campo e depois na opção
+    pelo texto (como no print enviado pelo usuário, que mostra uma lista com
+    'Vendedor/Produto' já marcado com um check vermelho)."""
+    valor = "Vendedor/Produto"
+    try:
+        select_locator = page.locator(f"select:has(option:text-is('{valor}'))").first
+        if select_locator.count() > 0:
+            select_locator.select_option(label=valor, timeout=5000)
+            return
+    except Exception:
+        pass
+    # Fallback: dropdown customizado — clica no campo "Agrupamento" pra abrir a
+    # lista e depois clica na opção "Vendedor/Produto" pelo texto.
+    page.get_by_text("Agrupamento", exact=False).first.click()
+    page.wait_for_timeout(300)
+    page.get_by_text(valor, exact=True).first.click()
+
+
+def _preencher_periodo_por_label(page, rotulo_ini, rotulo_fim, data_str):
+    """Preenche Data Inicial / Data Final pelo rótulo; se não achar por label, cai
+    pro fallback de pegar os dois primeiros campos de data/texto da página."""
+    ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_str)
+    ok_fim = _preencher_por_label_ou_placeholder(page, [rotulo_fim], data_str)
+    if ok_ini and ok_fim:
+        return
+    campos = page.locator("input[type='text'], input[type='date']").all()
+    if len(campos) >= 2:
+        campos[0].fill(data_str)
+        campos[1].fill(data_str)
+
+
+def _capturar_pdf_via_clique(page, context, botao):
+    """Clica no botão que gera o relatório (PDF/Imprimir) e captura os bytes do PDF
+    resultante, tentando 3 estratégias em ordem (o comportamento exato não pôde ser
+    verificado ao vivo, então cobrimos os 3 jeitos mais comuns desse tipo de sistema
+    legado):
+      A) o clique dispara um download de verdade;
+      B) o clique abre uma NOVA ABA com o PDF (visualizador do Chrome ou uma URL
+         que responde application/pdf);
+      C) a resposta do clique é interceptada como resposta de rede com
+         content-type PDF, sem abrir aba nova nem virar "download"."""
+    try:
+        with page.expect_download(timeout=10000) as download_info:
+            botao.click()
+        caminho_tmp = download_info.value.path()
+        with open(caminho_tmp, "rb") as f:
+            return f.read()
+    except PlaywrightTimeoutError:
+        pass
+
+    try:
+        with context.expect_page(timeout=10000) as nova_pagina_info:
+            botao.click()
+        nova_pagina = nova_pagina_info.value
+        nova_pagina.wait_for_load_state("domcontentloaded", timeout=30000)
+        resposta = nova_pagina.request.get(nova_pagina.url) if hasattr(nova_pagina, "request") else None
+        if resposta is not None:
+            return resposta.body()
+        return nova_pagina.pdf()
+    except PlaywrightTimeoutError:
+        pass
+
+    with page.expect_response(
+        lambda r: "pdf" in (r.headers.get("content-type", "").lower()) or r.url.lower().endswith(".pdf"),
+        timeout=15000,
+    ) as resposta_info:
+        botao.click()
+    return resposta_info.value.body()
+
+
+def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
+    """Abre o navegador, loga no SGI e captura, na MESMA sessão, os dois relatórios
+    do dia: 'Totais de Vendas' e 'Totais de Vendas Por Produto'. Retorna
+    {"vendas": bytes, "produtos": bytes}."""
     browser = playwright.chromium.launch(headless=not headed)
     context = browser.new_context(accept_downloads=True)
     page = context.new_page()
@@ -139,67 +228,56 @@ def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto,
         page.wait_for_timeout(1500)
         _salvar_debug(page, loja, "depois_do_login")
 
-        # ---- 2) Sidebar: Vendas > Totais de Vendas ----
+        hoje_str = date.today().strftime("%d/%m/%Y")
+
+        # ---- 2) Relatório 1: Vendas > Totais de Vendas ----
         page.get_by_text("Vendas", exact=True).first.click()
         page.wait_for_timeout(500)
         page.get_by_text("Totais de Vendas", exact=True).first.click()
         page.wait_for_load_state("domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
-        _salvar_debug(page, loja, "form_relatorio_antes_empresa")
+        _salvar_debug(page, loja, "form_vendas_antes_empresa")
 
-        # ---- 2.1) Campo "Empresa" DENTRO do formulário do relatório ----
-        # É um dropdown customizado (não um <select> nativo) — o valor pode não
-        # acompanhar a empresa escolhida no login, então sempre clicamos e
-        # selecionamos explicitamente a empresa certa aqui também.
+        # Campo "Empresa" DENTRO do formulário do relatório — dropdown separado do
+        # da tela de login, o valor não acompanha automaticamente.
         selecionar_empresa_no_formulario(page, empresa_texto)
-        _salvar_debug(page, loja, "form_relatorio_depois_empresa")
+        _salvar_debug(page, loja, "form_vendas_depois_empresa")
 
-        # ---- 3) Período = hoje até hoje ----
-        hoje_str = date.today().strftime("%d/%m/%Y")
         campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
         if len(campos_periodo) >= 2:
             campos_periodo[0].fill(hoje_str)
             campos_periodo[1].fill(hoje_str)
         else:
-            print(f"  [{loja}] aviso: não achei os 2 campos de período — o relatório pode sair "
-                  "com a data padrão do formulário em vez de hoje.")
+            print(f"  [{loja}] aviso: não achei os 2 campos de período (Totais de Vendas) — o "
+                  "relatório pode sair com a data padrão do formulário em vez de hoje.")
 
-        # ---- 4) Gerar e capturar o PDF ----
-        botao_pdf = page.get_by_role("button", name="PDF", exact=False)
+        botao_pdf_vendas = page.get_by_role("button", name="PDF", exact=False)
+        pdf_vendas = _capturar_pdf_via_clique(page, context, botao_pdf_vendas)
 
-        # Estratégia A: o clique dispara um download de verdade.
+        # ---- 3) Relatório 2: Vendas > Totais de Vendas Por Produto ----
+        # Reabre o menu "Vendas" (pode ter fechado ao navegar) e clica no item do
+        # segundo relatório. Nome exato confirmado pelo roteiro em PDF do usuário.
         try:
-            with page.expect_download(timeout=10000) as download_info:
-                botao_pdf.click()
-            caminho_tmp = download_info.value.path()
-            with open(caminho_tmp, "rb") as f:
-                return f.read()
-        except PlaywrightTimeoutError:
+            page.get_by_text("Vendas", exact=True).first.click()
+            page.wait_for_timeout(500)
+        except Exception:
             pass
+        page.get_by_text("Totais de Vendas Por Produto", exact=True).first.click()
+        page.wait_for_load_state("domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1500)
+        _salvar_debug(page, loja, "form_produto_antes_preencher")
 
-        # Estratégia B: o clique abre uma NOVA ABA com o PDF (visualizador do Chrome
-        # ou uma URL que responde application/pdf).
-        try:
-            with context.expect_page(timeout=10000) as nova_pagina_info:
-                botao_pdf.click()
-            nova_pagina = nova_pagina_info.value
-            nova_pagina.wait_for_load_state("domcontentloaded", timeout=30000)
-            resposta = nova_pagina.request.get(nova_pagina.url) if hasattr(nova_pagina, "request") else None
-            if resposta is not None:
-                return resposta.body()
-            # fallback final: pede pro Chromium exportar a própria aba como PDF
-            return nova_pagina.pdf()
-        except PlaywrightTimeoutError:
-            pass
+        _preencher_periodo_por_label(page, "Data Inicial", "Data Final", hoje_str)
 
-        # Estratégia C: a resposta do clique é interceptada como uma resposta de
-        # rede com content-type PDF, sem abrir aba nova nem virar "download".
-        with page.expect_response(
-            lambda r: "pdf" in (r.headers.get("content-type", "").lower()) or r.url.lower().endswith(".pdf"),
-            timeout=15000,
-        ) as resposta_info:
-            botao_pdf.click()
-        return resposta_info.value.body()
+        # Agrupamento SEMPRE "Vendedor/Produto" — exigência do usuário, é o formato
+        # que o parser espera (uma seção por vendedor).
+        selecionar_agrupamento_vendedor_produto(page)
+        _salvar_debug(page, loja, "form_produto_depois_preencher")
+
+        botao_imprimir = page.get_by_role("button", name="Imprimir", exact=False)
+        pdf_produtos = _capturar_pdf_via_clique(page, context, botao_imprimir)
+
+        return {"vendas": pdf_vendas, "produtos": pdf_produtos}
 
     except Exception:
         _salvar_debug(page, loja, "erro")
@@ -208,34 +286,67 @@ def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto,
         browser.close()
 
 
+def _sincronizar_vendas_diarias(loja, hoje, pdf_bytes):
+    resultado = parse_relatorio_vendas_pdf(pdf_bytes)
+    if not resultado["linhas"]:
+        with open(f"debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf", "wb") as f:
+            f.write(pdf_bytes)
+        print(f"[{loja}] Nenhuma linha de vendedor reconhecida em 'Totais de Vendas' "
+              f"(salvo em debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf para inspeção).")
+        return
+
+    vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
+    matched, nao_encontrados = casar_vendedores(resultado["linhas"], vendedores_df)
+    if nao_encontrados:
+        print(f"[{loja}] Ignorados em 'Totais de Vendas' (sem correspondência no cadastro): "
+              + ", ".join(nao_encontrados))
+
+    for item in matched:
+        db.upsert_venda(item["vendedor_id"], hoje, float(item["t_liq"]), int(item["n_ped"]))
+        print(f"[{loja}] {item['nome']}: {item['n_ped']} pedido(s), R$ {item['t_liq']:.2f}")
+
+    print(f"[{loja}] {len(matched)} vendedor(es) sincronizado(s) em 'Totais de Vendas' "
+          f"para {hoje.strftime('%d/%m/%Y')}.")
+
+
+def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
+    resultado = parse_relatorio_produtos_pdf(pdf_bytes)
+    if not resultado["produtos"]:
+        with open(f"debug_{loja.replace(' ', '_')}_produtos_pdf_vazio.pdf", "wb") as f:
+            f.write(pdf_bytes)
+        print(f"[{loja}] Nenhum produto reconhecido em 'Totais de Vendas Por Produto' "
+              f"(salvo em debug_{loja.replace(' ', '_')}_produtos_pdf_vazio.pdf para inspeção).")
+        return
+
+    vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
+    matched, nao_encontrados = casar_produtos_vendedores(resultado["produtos"], vendedores_df)
+    if nao_encontrados:
+        print(f"[{loja}] Ignorados em 'Totais de Vendas Por Produto' (sem correspondência no cadastro): "
+              + ", ".join(nao_encontrados))
+
+    por_vendedor = {}
+    for item in matched:
+        por_vendedor.setdefault(item["vendedor_id"], []).append(item)
+
+    for vendedor_id, produtos in por_vendedor.items():
+        db.upsert_vendas_produtos_dia(vendedor_id, hoje, produtos)
+
+    total_valor = sum(p["valor_total"] or 0.0 for p in matched)
+    print(f"[{loja}] {len(matched)} produto(s) de {len(por_vendedor)} vendedor(es) sincronizado(s) em "
+          f"'Totais de Vendas Por Produto' para {hoje.strftime('%d/%m/%Y')} — R$ {total_valor:,.2f}.")
+
+
 def sincronizar_loja(playwright, loja, hoje, headed=False):
     url_login = os.environ["SGI_URL_LOGIN"]
     login = os.environ["SGI_LOGIN"]
     senha = os.environ["SGI_SENHA"]
     empresa_texto = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
 
-    print(f"[{loja}] Fazendo login e gerando relatório de {hoje.strftime('%d/%m/%Y')}...")
-    pdf_bytes = logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
+    print(f"[{loja}] Fazendo login e gerando relatórios de {hoje.strftime('%d/%m/%Y')}...")
+    pdfs = logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
 
-    resultado = parse_relatorio_vendas_pdf(pdf_bytes)
-    if not resultado["linhas"]:
-        with open(f"debug_{loja.replace(' ', '_')}_pdf_vazio.pdf", "wb") as f:
-            f.write(pdf_bytes)
-        print(f"[{loja}] Nenhuma linha de vendedor reconhecida no PDF gerado "
-              f"(salvo em debug_{loja.replace(' ', '_')}_pdf_vazio.pdf para inspeção). Pulando essa loja.")
-        return
-
-    vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
-    matched, nao_encontrados = casar_vendedores(resultado["linhas"], vendedores_df)
-
-    if nao_encontrados:
-        print(f"[{loja}] Ignorados (sem correspondência no cadastro): {', '.join(nao_encontrados)}")
-
-    for item in matched:
-        db.upsert_venda(item["vendedor_id"], hoje, float(item["t_liq"]), int(item["n_ped"]))
-        print(f"[{loja}] {item['nome']}: {item['n_ped']} pedido(s), R$ {item['t_liq']:.2f}")
-
-    print(f"[{loja}] {len(matched)} vendedor(es) sincronizado(s) para {hoje.strftime('%d/%m/%Y')}.")
+    _sincronizar_vendas_diarias(loja, hoje, pdfs["vendas"])
+    _sincronizar_vendas_produtos(loja, hoje, pdfs["produtos"])
 
 
 def main():

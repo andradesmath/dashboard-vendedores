@@ -222,6 +222,24 @@ def init_db():
             UNIQUE (vendedor_id, ano_venda, mes_venda)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS vendas_produtos_diarias (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            data DATE NOT NULL,
+            cod_produto TEXT NOT NULL,
+            descricao_produto TEXT NOT NULL,
+            marca TEXT,
+            fornecedor TEXT,
+            posit NUMERIC(10, 2),
+            vendas NUMERIC(10, 2),
+            qtd NUMERIC(12, 2),
+            qtd_cx NUMERIC(12, 2),
+            valor_total NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            pct NUMERIC(6, 2),
+            UNIQUE (vendedor_id, data, cod_produto)
+        )
+        """,
     ]
     with get_engine().begin() as conn:
         for stmt in migracoes_pre:
@@ -1342,6 +1360,156 @@ def get_indice_inadimplencia_geral_loja():
         resultado[loja] = _resumo(sub_loja)
     resultado["Geral"] = _resumo(hist_valida)
     return resultado
+
+
+# --------------------------------------------------------------------------
+# Vendas por produto (relatório "Totais de Vendas Por Produto" do SGI) - uma
+# linha por vendedor/dia/produto. Alimentado pela mesma automação (login +
+# GitHub Actions) que alimenta vendas_diarias, e também pode ser importado via
+# PDF manual no futuro seguindo o mesmo padrão. Cada sincronização de um
+# vendedor/dia SUBSTITUI por completo os produtos daquele vendedor/dia (delete +
+# insert), em vez de UPSERT por produto — evita registro "fantasma" de um
+# produto que vendeu ontem mas não vende mais hoje.
+# --------------------------------------------------------------------------
+def upsert_vendas_produtos_dia(vendedor_id, data_venda, produtos):
+    """`produtos`: lista de dicts com as chaves cod_produto, descricao_produto,
+    marca, fornecedor, posit, vendas, qtd, qtd_cx, valor_total, pct (todas exceto
+    cod_produto/descricao_produto/valor_total são opcionais/podem vir None)."""
+    data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM vendas_produtos_diarias WHERE vendedor_id=:vid AND data=:data"),
+            {"vid": vendedor_id, "data": data_str},
+        )
+        if produtos:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO vendas_produtos_diarias
+                        (vendedor_id, data, cod_produto, descricao_produto, marca, fornecedor,
+                         posit, vendas, qtd, qtd_cx, valor_total, pct)
+                    VALUES
+                        (:vendedor_id, :data, :cod_produto, :descricao_produto, :marca, :fornecedor,
+                         :posit, :vendas, :qtd, :qtd_cx, :valor_total, :pct)
+                    """
+                ),
+                [
+                    {
+                        "vendedor_id": vendedor_id,
+                        "data": data_str,
+                        "cod_produto": p.get("cod_produto"),
+                        "descricao_produto": p.get("descricao_produto"),
+                        "marca": p.get("marca"),
+                        "fornecedor": p.get("fornecedor"),
+                        "posit": p.get("posit"),
+                        "vendas": p.get("vendas"),
+                        "qtd": p.get("qtd"),
+                        "qtd_cx": p.get("qtd_cx"),
+                        "valor_total": p.get("valor_total") or 0.0,
+                        "pct": p.get("pct"),
+                    }
+                    for p in produtos
+                ],
+            )
+    limpar_cache()
+
+
+@cache_leitura()
+def get_produtos_mais_vendidos(ano, mes, loja=None, vendedor_id=None, top_n=15):
+    """Ranking de produtos mais vendidos (por valor R$) no mês, somando os
+    lançamentos diários. Filtra por loja e/ou por um vendedor específico."""
+    cols = ["cod_produto", "descricao_produto", "marca", "fornecedor", "qtd_total", "valor_total"]
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    query = """
+        SELECT vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor,
+               SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    if vendedor_id:
+        query += " AND vp.vendedor_id = :vendedor_id"
+        params["vendedor_id"] = vendedor_id
+    query += """
+        GROUP BY vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor
+        ORDER BY valor_total DESC
+        LIMIT :top_n
+    """
+    params["top_n"] = top_n
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["qtd_total"] = df["qtd_total"].astype(float)
+    df["valor_total"] = df["valor_total"].astype(float)
+    return df
+
+
+@cache_leitura()
+def get_produtos_mais_vendidos_por_vendedor(ano, mes, loja=None, top_n=5):
+    """Top N produtos (por valor R$) de CADA vendedor ativo no mês, numa única
+    consulta (não uma por vendedor) — o ranking por vendedor é feito em pandas
+    (groupby + head) em cima do total já agregado por produto/vendedor."""
+    cols = ["vendedor_id", "nome", "loja", "cod_produto", "descricao_produto", "marca", "fornecedor", "qtd_total", "valor_total"]
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    query = """
+        SELECT vp.vendedor_id, v.nome, v.loja, vp.cod_produto, vp.descricao_produto,
+               vp.marca, vp.fornecedor, SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim AND v.ativo = TRUE
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    query += (
+        " GROUP BY vp.vendedor_id, v.nome, v.loja, vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor"
+    )
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["qtd_total"] = df["qtd_total"].astype(float)
+    df["valor_total"] = df["valor_total"].astype(float)
+    df = df.sort_values(["vendedor_id", "valor_total"], ascending=[True, False])
+    return df.groupby("vendedor_id").head(top_n).reset_index(drop=True)
+
+
+@cache_leitura()
+def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", top_n=15):
+    """Ranking por marca OU fornecedor (agrupar_por: 'marca' ou 'fornecedor'), somando
+    o valor R$ vendido no mês por todos os vendedores do filtro."""
+    if agrupar_por not in ("marca", "fornecedor"):
+        raise ValueError("agrupar_por deve ser 'marca' ou 'fornecedor'")
+    cols = ["grupo", "qtd_total", "valor_total"]
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    query = f"""
+        SELECT vp.{agrupar_por} AS grupo, SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim AND vp.{agrupar_por} IS NOT NULL AND vp.{agrupar_por} <> ''
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    query += f" GROUP BY vp.{agrupar_por} ORDER BY valor_total DESC LIMIT :top_n"
+    params["top_n"] = top_n
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["qtd_total"] = df["qtd_total"].astype(float)
+    df["valor_total"] = df["valor_total"].astype(float)
+    return df
 
 
 # --------------------------------------------------------------------------
