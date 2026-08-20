@@ -98,61 +98,17 @@ def _preencher_por_label_ou_placeholder(page, rotulos, valor):
     return False
 
 
-def selecionar_empresa_dropdown_customizado(page, empresa_texto):
-    """Seleciona a empresa num dropdown customizado tipo 'clique pra abrir, digite
-    pra filtrar, clique na opção' (visto no formulário 'Totais de Vendas' — mostra
-    uma caixa de busca e uma lista de empresas ao clicar, não é um <select> comum,
-    então select_option() não funciona nele). Tenta várias estratégias em sequência
-    porque não foi possível inspecionar o componente ao vivo durante o
-    desenvolvimento."""
-    # Se a empresa certa já estiver selecionada (texto já visível na tela), não
-    # precisa fazer nada.
-    if page.get_by_text(empresa_texto, exact=True).count() > 0:
-        try:
-            # confere se já está marcada/selecionada e não só listada como opção
-            if page.locator(f"text='{empresa_texto}'").first.locator(
-                "xpath=ancestor-or-self::*[contains(@class,'selected') or contains(@class,'active')]"
-            ).count() > 0:
-                return
-        except Exception:
-            pass
-
-    abriu = False
-    for tentativa in (
-        lambda: page.get_by_label("Empresa", exact=False).first,
-        lambda: page.get_by_text("Empresa", exact=True).first.locator("xpath=following::*[1]"),
-        lambda: page.get_by_text("Empresa", exact=True).first,
-    ):
-        try:
-            campo = tentativa()
-            if campo.count() > 0:
-                campo.click(timeout=5000)
-                abriu = True
-                break
-        except Exception:
-            continue
-
-    if not abriu:
-        print("  aviso: não consegui clicar no campo 'Empresa' do formulário de relatório.")
-        return
-
-    page.wait_for_timeout(400)
-
-    # Se abriu uma caixa de busca dentro do dropdown, filtra pelo texto da empresa.
-    try:
-        caixa_busca = page.locator("input[type='text']:visible").last
-        if caixa_busca.count() > 0:
-            caixa_busca.fill(empresa_texto)
-            page.wait_for_timeout(400)
-    except Exception:
-        pass
-
-    # Clica na opção com o texto exato da empresa (a última ocorrência costuma ser
-    # a do menu aberto, não a do rótulo/valor atual do campo).
-    try:
-        page.get_by_text(empresa_texto, exact=True).last.click(timeout=5000)
-    except Exception as e:
-        print(f"  aviso: não consegui clicar na opção '{empresa_texto}' no dropdown de Empresa: {e}")
+def selecionar_empresa_no_formulario(page, empresa_texto):
+    """Seleciona a empresa no formulário 'Totais de Vendas'. É um <select> nativo
+    (confirmado pelo log de erro de uma tentativa anterior: a opção resolvia para
+    '<option value="...">CASA DE ADUBOS CAFE BOM</option>' dentro de um <select> —
+    o visual de "caixa de busca" era o próprio navegador/SO renderizando um select
+    nativo com muitas opções, não um componente customizado). select_option() no
+    <select> que contém essa opção resolve direto, sem precisar clicar em nada."""
+    select_locator = page.locator(f"select:has(option:text-is('{empresa_texto}'))").first
+    if select_locator.count() == 0:
+        select_locator = page.get_by_label("Empresa", exact=False).first
+    select_locator.select_option(label=empresa_texto, timeout=10000)
 
 
 def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto, headed=False):
@@ -195,7 +151,7 @@ def logar_e_baixar_pdf(playwright, loja, url_login, login, senha, empresa_texto,
         # É um dropdown customizado (não um <select> nativo) — o valor pode não
         # acompanhar a empresa escolhida no login, então sempre clicamos e
         # selecionamos explicitamente a empresa certa aqui também.
-        selecionar_empresa_dropdown_customizado(page, empresa_texto)
+        selecionar_empresa_no_formulario(page, empresa_texto)
         _salvar_debug(page, loja, "form_relatorio_depois_empresa")
 
         # ---- 3) Período = hoje até hoje ----
