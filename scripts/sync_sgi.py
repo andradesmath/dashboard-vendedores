@@ -357,23 +357,30 @@ def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim
 
 
 def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, data_alvo=None, headed=False):
-    """Abre o navegador, loga no SGI e captura, na MESMA sessão, os dois relatórios
-    do dia (período = `data_alvo`, ou hoje se não informado): 'Totais de Vendas' e
-    'Totais de Vendas Por Produto'. Retorna {"vendas": bytes, "produtos": bytes}."""
+    """Abre o navegador, loga no SGI e captura o relatório 'Totais de Vendas Por
+    Produto' do dia (período = `data_alvo`, ou hoje se não informado). Retorna
+    {"produtos": bytes}.
+
+    Antes essa função também gerava o relatório 'Totais de Vendas' à parte (pra
+    tirar Nº Ped/T. Liq.), mas o campo de período daquele formulário é um widget
+    bootstrap-datepicker que se mostrou consistentemente não confiável de
+    automatizar (várias tentativas — fill(), Tab, digitação simulada, Escape —
+    continuaram gerando o relatório com a data de hoje em vez da pedida). Decisão
+    tomada com o usuário: abandonar esse relatório na automação e derivar
+    Realizado/Pedidos por vendedor a partir da SOMA dos produtos do relatório
+    'Totais de Vendas Por Produto' (já validado, extrai corretamente) — ver
+    _sincronizar_vendas_produtos. O relatório 'Totais de Vendas' continua
+    disponível pra importação MANUAL de PDF no painel (aba Lançamentos)."""
     data_alvo = data_alvo or date.today()
     browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
     try:
         data_str = data_alvo.strftime("%d/%m/%Y")
 
-        navegar_ate_totais_de_vendas(page)
-        _salvar_debug(page, loja, "form_vendas_antes_empresa")
-        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_str, data_str, loja=loja)
-
         navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "form_produto_antes_preencher")
         pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
 
-        return {"vendas": pdf_vendas, "produtos": pdf_produtos}
+        return {"produtos": pdf_produtos}
     except Exception:
         _salvar_debug(page, loja, "erro")
         raise
@@ -382,6 +389,12 @@ def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa
 
 
 def _sincronizar_vendas_diarias(loja, hoje, pdf_bytes):
+    """NÃO é mais chamada na sincronização automática (sincronizar_loja) — o
+    formulário de período de 'Totais de Vendas' se mostrou não confiável de
+    automatizar. Fica aqui só de referência / caso alguém queira reativar depois
+    que o widget de data for corrigido. O upload manual desse mesmo relatório
+    (aba Lançamentos do painel) continua funcionando normalmente, sem depender
+    desta função."""
     resultado = parse_relatorio_vendas_pdf(pdf_bytes)
     if not resultado["linhas"]:
         with open(f"debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf", "wb") as f:
@@ -405,6 +418,15 @@ def _sincronizar_vendas_diarias(loja, hoje, pdf_bytes):
 
 
 def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
+    """Faz o parse do relatório 'Totais de Vendas Por Produto' e grava tanto o
+    detalhe por produto (vendas_produtos_diarias) quanto o RESUMO por vendedor
+    (vendas_diarias — Realizado/Pedidos), os dois derivados do MESMO PDF já
+    validado. Antes, vendas_diarias vinha de um PDF à parte ('Totais de Vendas'),
+    cujo formulário de período mostrou-se não confiável de automatizar. Como
+    esse relatório de produtos não tem uma coluna de 'número de pedidos', usamos
+    a SOMA da coluna 'Vendas' por vendedor como aproximação de Pedidos — pode
+    superestimar um pouco em pedidos com mais de um produto (decisão tomada com
+    o usuário, preferindo consistência de dados a uma métrica de pedidos exata)."""
     resultado = parse_relatorio_produtos_pdf(pdf_bytes)
     if not resultado["produtos"]:
         with open(f"debug_{loja.replace(' ', '_')}_produtos_pdf_vazio.pdf", "wb") as f:
@@ -426,9 +448,14 @@ def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
     for vendedor_id, produtos in por_vendedor.items():
         db.upsert_vendas_produtos_dia(vendedor_id, hoje, produtos)
 
+        soma_valor = sum(p["valor_total"] or 0.0 for p in produtos)
+        soma_vendas = sum(p["vendas"] or 0 for p in produtos)
+        db.upsert_venda(vendedor_id, hoje, float(soma_valor), int(round(soma_vendas)))
+
     total_valor = sum(p["valor_total"] or 0.0 for p in matched)
     print(f"[{loja}] {len(matched)} produto(s) de {len(por_vendedor)} vendedor(es) sincronizado(s) em "
-          f"'Totais de Vendas Por Produto' para {hoje.strftime('%d/%m/%Y')} — R$ {total_valor:,.2f}.")
+          f"'Totais de Vendas Por Produto' para {hoje.strftime('%d/%m/%Y')} — R$ {total_valor:,.2f} "
+          "(vendas_diarias e vendas_produtos_diarias atualizados a partir deste único relatório).")
 
 
 def sincronizar_loja(playwright, loja, data_alvo, headed=False):
@@ -437,21 +464,18 @@ def sincronizar_loja(playwright, loja, data_alvo, headed=False):
     senha = os.environ["SGI_SENHA"]
     empresa_texto = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
 
-    print(f"[{loja}] Fazendo login e gerando relatórios de {data_alvo.strftime('%d/%m/%Y')}...")
+    print(f"[{loja}] Fazendo login e gerando relatório de {data_alvo.strftime('%d/%m/%Y')}...")
     pdfs = logar_e_baixar_relatorios(
         playwright, loja, url_login, login, senha, empresa_texto, data_alvo=data_alvo, headed=headed
     )
 
-    # Guarda SEMPRE uma cópia dos PDFs brutos (não só quando o parser não acha
+    # Guarda SEMPRE uma cópia do PDF bruto (não só quando o parser não acha
     # nada) — essencial pra depurar casos em que o parser roda sem erro mas
     # extrai um valor errado (silencioso, não aparece nos logs de texto).
     sufixo = data_alvo.strftime("%Y%m%d")
-    with open(f"debug_{loja.replace(' ', '_')}_vendas_{sufixo}.pdf", "wb") as f:
-        f.write(pdfs["vendas"])
     with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
         f.write(pdfs["produtos"])
 
-    _sincronizar_vendas_diarias(loja, data_alvo, pdfs["vendas"])
     _sincronizar_vendas_produtos(loja, data_alvo, pdfs["produtos"])
 
 
