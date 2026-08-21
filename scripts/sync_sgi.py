@@ -160,15 +160,42 @@ def selecionar_agrupamento_vendedor_produto(page):
 
 
 def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="Data Inicial", rotulo_fim="Data Final"):
-    """Preenche os campos de período (Data Inicial / Data Final, com rótulos
-    configuráveis) com datas possivelmente diferentes — usado tanto pro dia de hoje
-    (sync diário) quanto por um mês/dia específico (backfill histórico). Se não
-    achar os campos pelo rótulo, cai pro fallback de pegar os dois primeiros campos
-    de data/texto da página."""
+    """Preenche os campos de período (Data Inicial / Data Final) com datas
+    possivelmente diferentes — usado tanto pro dia de hoje (sync diário) quanto
+    por um mês/dia específico (backfill histórico, reprocessamento). Ordem de
+    estratégias, da mais confiável pra mais arriscada:
+      1) input[name='data_inicial']/[name='data_final'] — confirmado via HTML
+         real capturado em debug que é esse o campo verdadeiro no formulário
+         'Totais de Vendas' (um widget bootstrap-datepicker/input-daterange).
+         Como os dois relatórios do SGI parecem seguir o mesmo template, tenta
+         aqui primeiro pros dois.
+      2) Pelo rótulo acessível (rotulo_ini/rotulo_fim) — só funciona se o
+         <label> do formulário tiver um `for` que bata com o `id` do input; no
+         formulário 'Totais de Vendas' isso NÃO acontece (for≠id), por isso a
+         estratégia 1 existe.
+      3) Fallback genérico (2 primeiros input[type=text/date] da página) — a
+         mais arriscada: formulários com dropdowns bootstrap-select têm uma
+         caixa de busca escondida (<input aria-label="Search">) POR dropdown,
+         então esse fallback pode acabar preenchendo o campo errado. Só usa se
+         as duas estratégias anteriores falharem."""
+    campo_ini = page.locator("input[name='data_inicial']")
+    campo_fim = page.locator("input[name='data_final']")
+    if campo_ini.count() > 0 and campo_fim.count() > 0:
+        campo_ini.first.fill(data_ini_str)
+        campo_ini.first.press("Tab")
+        campo_fim.first.fill(data_fim_str)
+        campo_fim.first.press("Tab")
+        return True
+
     ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
     ok_fim = _preencher_por_label_ou_placeholder(page, [rotulo_fim], data_fim_str)
     if ok_ini and ok_fim:
         return True
+
+    print(
+        "  [aviso] usando fallback genérico pra preencher o período — pode pegar o campo "
+        "errado se o formulário tiver dropdowns com caixa de busca escondida."
+    )
     campos = page.locator("input[type='text'], input[type='date']").all()
     if len(campos) >= 2:
         campos[0].fill(data_ini_str)
@@ -282,28 +309,22 @@ def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_
     Reseleciona a Empresa (o valor não acompanha automaticamente o do login) e o
     período pedido, clica em PDF e retorna os bytes.
 
-    IMPORTANTE (bug corrigido): a estratégia antiga (localizar os 2 <input> que
-    "seguem" o texto "Período" via xpath) falhava silenciosamente quando o campo
-    não estava exatamente nesse layout — sem erro nenhum, o formulário só ficava
-    com a data padrão dele (hoje), e o relatório saía sempre do dia da execução,
-    não do dia pedido (confirmado comparando um PDF gerado manualmente pro dia
-    20/08 com o PDF que a automação capturou pedindo o dia 20/08: o conteúdo
-    voltou do dia 21/08 — a automação nunca tinha realmente mudado a data).
-    Agora tenta primeiro pelos rótulos "Data Inicial"/"Data Final" (mesmo padrão
-    já usado no formulário de Vendas Por Produto), com o xpath antigo como
-    fallback, e avisa no log se nenhuma das duas estratégias achar os campos."""
+    IMPORTANTE (bug corrigido, confirmado via HTML real capturado em debug):
+    os campos de período desse formulário são um widget bootstrap-datepicker
+    (input-daterange) com <input name="data_inicial"> e <input name="data_final">
+    — o <label for="data_inicial"> desse form NÃO tem um id correspondente no
+    input (só o atributo name), então page.get_by_label() nunca encontrava o
+    campo. O fallback genérico por input[type=text] era ainda pior: caía na
+    caixa de busca escondida de um dos dropdowns bootstrap-select (Status, Tipo
+    de Orçamento etc., que também são <input type=text> internamente), travando
+    o fill() por 30s. Os dois problemas juntos faziam o formulário sempre ficar
+    com a data padrão dele (hoje), então todo pedido de reprocessar um dia
+    específico na prática só repetia o dia da execução — confirmado comparando
+    um PDF gerado manualmente pro dia 20/08 com o que a automação capturou
+    pedindo esse mesmo dia: o conteúdo voltou do dia 21/08 (hoje)."""
     selecionar_empresa_no_formulario(page, empresa_texto)
 
     preenchido = _preencher_data_inicial_final(page, data_ini_str, data_fim_str, "Data Inicial", "Data Final")
-    if not preenchido:
-        campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
-        if len(campos_periodo) >= 2:
-            campos_periodo[0].fill(data_ini_str)
-            campos_periodo[0].press("Tab")
-            campos_periodo[1].fill(data_fim_str)
-            campos_periodo[1].press("Tab")
-            preenchido = True
-
     if not preenchido:
         print(
             f"  [aviso] não consegui preencher o período (pedido: {data_ini_str} a {data_fim_str}) "
