@@ -109,6 +109,13 @@ def _preencher_por_label_ou_placeholder(page, rotulos, valor):
                 campo = tentativa()
                 if campo.count() > 0:
                     campo.first.fill(valor)
+                    # Tira o foco do campo depois de preencher — alguns componentes de
+                    # data em JS só "confirmam" o valor digitado num evento de blur,
+                    # não no simples fill() do DOM.
+                    try:
+                        campo.first.press("Tab")
+                    except Exception:
+                        pass
                     return True
             except Exception:
                 continue
@@ -161,11 +168,13 @@ def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="
     ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
     ok_fim = _preencher_por_label_ou_placeholder(page, [rotulo_fim], data_fim_str)
     if ok_ini and ok_fim:
-        return
+        return True
     campos = page.locator("input[type='text'], input[type='date']").all()
     if len(campos) >= 2:
         campos[0].fill(data_ini_str)
         campos[1].fill(data_fim_str)
+        return True
+    return False
 
 
 def _capturar_pdf_via_clique(page, context, botao):
@@ -271,12 +280,37 @@ def navegar_ate_totais_de_vendas_por_produto(page):
 def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_fim_str):
     """Assume que já está na página 'Totais de Vendas' (ver navegar_ate_totais_de_vendas).
     Reseleciona a Empresa (o valor não acompanha automaticamente o do login) e o
-    período pedido, clica em PDF e retorna os bytes."""
+    período pedido, clica em PDF e retorna os bytes.
+
+    IMPORTANTE (bug corrigido): a estratégia antiga (localizar os 2 <input> que
+    "seguem" o texto "Período" via xpath) falhava silenciosamente quando o campo
+    não estava exatamente nesse layout — sem erro nenhum, o formulário só ficava
+    com a data padrão dele (hoje), e o relatório saía sempre do dia da execução,
+    não do dia pedido (confirmado comparando um PDF gerado manualmente pro dia
+    20/08 com o PDF que a automação capturou pedindo o dia 20/08: o conteúdo
+    voltou do dia 21/08 — a automação nunca tinha realmente mudado a data).
+    Agora tenta primeiro pelos rótulos "Data Inicial"/"Data Final" (mesmo padrão
+    já usado no formulário de Vendas Por Produto), com o xpath antigo como
+    fallback, e avisa no log se nenhuma das duas estratégias achar os campos."""
     selecionar_empresa_no_formulario(page, empresa_texto)
-    campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
-    if len(campos_periodo) >= 2:
-        campos_periodo[0].fill(data_ini_str)
-        campos_periodo[1].fill(data_fim_str)
+
+    preenchido = _preencher_data_inicial_final(page, data_ini_str, data_fim_str, "Data Inicial", "Data Final")
+    if not preenchido:
+        campos_periodo = page.locator("text=Período").locator("xpath=following::input").all()
+        if len(campos_periodo) >= 2:
+            campos_periodo[0].fill(data_ini_str)
+            campos_periodo[0].press("Tab")
+            campos_periodo[1].fill(data_fim_str)
+            campos_periodo[1].press("Tab")
+            preenchido = True
+
+    if not preenchido:
+        print(
+            f"  [aviso] não consegui preencher o período (pedido: {data_ini_str} a {data_fim_str}) "
+            "no formulário 'Totais de Vendas' — o relatório provavelmente vai sair com a data "
+            "padrão do formulário (hoje), não a pedida."
+        )
+
     botao_pdf = page.get_by_role("button", name="PDF", exact=False)
     return _capturar_pdf_via_clique(page, context, botao_pdf)
 
