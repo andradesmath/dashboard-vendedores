@@ -377,6 +377,15 @@ def sincronizar_loja(playwright, loja, data_alvo, headed=False):
         playwright, loja, url_login, login, senha, empresa_texto, data_alvo=data_alvo, headed=headed
     )
 
+    # Guarda SEMPRE uma cópia dos PDFs brutos (não só quando o parser não acha
+    # nada) — essencial pra depurar casos em que o parser roda sem erro mas
+    # extrai um valor errado (silencioso, não aparece nos logs de texto).
+    sufixo = data_alvo.strftime("%Y%m%d")
+    with open(f"debug_{loja.replace(' ', '_')}_vendas_{sufixo}.pdf", "wb") as f:
+        f.write(pdfs["vendas"])
+    with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
+        f.write(pdfs["produtos"])
+
     _sincronizar_vendas_diarias(loja, data_alvo, pdfs["vendas"])
     _sincronizar_vendas_produtos(loja, data_alvo, pdfs["produtos"])
 
