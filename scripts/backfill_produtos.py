@@ -73,7 +73,12 @@ def _gerar_meses(ano_ini, mes_ini, ano_fim, mes_fim):
 
 def _processar_pdf_produtos(loja, data_tag, pdf_bytes, rotulo):
     """Faz o parse do PDF de produtos e grava no banco sob a data `data_tag`
-    (1º dia do mês pro histórico mensal, o próprio dia pro mês corrente)."""
+    (1º dia do mês pro histórico mensal, o próprio dia pro mês corrente) —
+    tanto o detalhe por produto (vendas_produtos_diarias) quanto o resumo por
+    vendedor (vendas_diarias: Realizado = soma de valor_total, Pedidos = soma
+    da coluna 'Vendas' como aproximação), igual à sincronização diária em
+    scripts/sync_sgi.py. Isso re-popula vendas_diarias com o histórico também,
+    já que antes esse backfill só gravava vendas_produtos_diarias."""
     resultado = parse_relatorio_produtos_pdf(pdf_bytes)
     if not resultado["produtos"]:
         print(f"  [{loja}] {rotulo}: nenhum produto reconhecido (sem vendas nesse "
@@ -91,6 +96,10 @@ def _processar_pdf_produtos(loja, data_tag, pdf_bytes, rotulo):
         por_vendedor.setdefault(item["vendedor_id"], []).append(item)
     for vendedor_id, produtos in por_vendedor.items():
         db.upsert_vendas_produtos_dia(vendedor_id, data_tag, produtos)
+
+        soma_valor = sum(p["valor_total"] or 0.0 for p in produtos)
+        soma_vendas = sum(p["vendas"] or 0 for p in produtos)
+        db.upsert_venda(vendedor_id, data_tag, float(soma_valor), int(round(soma_vendas)))
 
     total_valor = sum(p["valor_total"] or 0.0 for p in matched)
     print(f"  [{loja}] {rotulo}: {len(matched)} produto(s) de {len(por_vendedor)} "
