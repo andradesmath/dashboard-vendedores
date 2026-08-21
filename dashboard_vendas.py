@@ -1231,13 +1231,99 @@ with tab_dashboard:
         f"Dias úteis transcorridos: {dias_transcorridos} de {dias_uteis_total} | "
         f"Pedidos no mês: {pedidos_total}"
     )
+    st.caption(
+        "ℹ️ *Pedidos* (e por consequência o *Ticket Médio*) é aproximado pela soma da coluna "
+        "'Vendas' do relatório 'Totais de Vendas Por Produto' nos dias sincronizados "
+        "automaticamente pelo SGI — pode superestimar levemente pedidos com mais de um item, o "
+        "que subestima um pouco o ticket médio nesses dias. Lançamentos manuais com Nº de Pedidos "
+        "exato não são afetados."
+    )
+
+    st.markdown("---")
+
+    # ---- Central de Alertas: ritmo de meta (projeção) por vendedor/loja e quedas vs. mês anterior ----
+    ano_ant, mes_ant = db.mes_anterior(ano_filtro, mes_filtro)
+
+    indicadores_atual = db.get_indicadores_vendedores_mes(ano_filtro, mes_filtro, loja=loja_filtro)
+    if not indicadores_atual.empty:
+        if dias_transcorridos > 0:
+            indicadores_atual["projecao_fechamento"] = (
+                indicadores_atual["realizado"] / dias_transcorridos * dias_uteis_total
+            )
+        else:
+            indicadores_atual["projecao_fechamento"] = indicadores_atual["realizado"]
+        indicadores_atual["projecao_pct"] = indicadores_atual.apply(
+            lambda r: (r["projecao_fechamento"] / r["valor_meta"] * 100) if r["valor_meta"] > 0 else None,
+            axis=1,
+        )
+
+    LIMIAR_PROJECAO_CRITICA = 70.0   # projeção de fechamento abaixo disso = alerta (mesmo corte do semáforo)
+    LIMIAR_QUEDA_MOM_ALERTA = -20.0  # queda de realizado vs. mês anterior considerada alerta
+
+    st.markdown("### 🔔 Central de Alertas")
+    st.caption(
+        "Recalculado a cada carregamento da tela: ritmo de meta (projeção de fechamento no ritmo "
+        "atual, considerando só dias úteis já transcorridos) por vendedor e por loja, e quedas de "
+        f"realizado vs. o mês anterior acima de {abs(LIMIAR_QUEDA_MOM_ALERTA):.0f}%."
+    )
+
+    alertas = []
+
+    if not indicadores_atual.empty and dias_transcorridos > 0:
+        for row in indicadores_atual.itertuples():
+            if row.valor_meta > 0 and pd.notna(row.projecao_pct) and row.projecao_pct < LIMIAR_PROJECAO_CRITICA:
+                alertas.append((
+                    "🔴",
+                    f"**{row.nome}** ({row.loja}): no ritmo atual, fecha o mês em "
+                    f"**{row.projecao_pct:.0f}%** da meta (projeção {db.formatar_moeda(row.projecao_fechamento)} "
+                    f"de {db.formatar_moeda(row.valor_meta)})."
+                ))
+
+    indicadores_mes_anterior = db.get_indicadores_vendedores_mes(ano_ant, mes_ant, loja=loja_filtro)
+    if not indicadores_atual.empty and not indicadores_mes_anterior.empty:
+        comp_mom = indicadores_atual[["vendedor_id", "nome", "loja", "realizado"]].merge(
+            indicadores_mes_anterior[["vendedor_id", "realizado"]].rename(columns={"realizado": "realizado_ant"}),
+            on="vendedor_id", how="left",
+        )
+        for row in comp_mom.itertuples():
+            if row.realizado_ant and row.realizado_ant > 0:
+                variacao = (row.realizado - row.realizado_ant) / row.realizado_ant * 100
+                if variacao <= LIMIAR_QUEDA_MOM_ALERTA:
+                    alertas.append((
+                        "🟡",
+                        f"**{row.nome}** ({row.loja}): realizado caiu **{variacao:.0f}%** vs. "
+                        f"{db.MESES_PT[mes_ant]}/{ano_ant} ({db.formatar_moeda(row.realizado_ant)} → "
+                        f"{db.formatar_moeda(row.realizado)})."
+                    ))
+
+    if dias_transcorridos > 0:
+        for loja_nome in db.LOJAS:
+            totais_loja_alerta = db.get_totais_mes(ano_filtro, mes_filtro, loja=loja_nome)
+            if totais_loja_alerta["meta"] > 0:
+                projecao_loja = totais_loja_alerta["realizado"] / dias_transcorridos * dias_uteis_total
+                projecao_loja_pct = projecao_loja / totais_loja_alerta["meta"] * 100
+                if projecao_loja_pct < LIMIAR_PROJECAO_CRITICA:
+                    alertas.append((
+                        "🔴",
+                        f"Loja **{loja_nome}**: no ritmo atual, fecha o mês em "
+                        f"**{projecao_loja_pct:.0f}%** da meta (projeção "
+                        f"{db.formatar_moeda(projecao_loja)} de {db.formatar_moeda(totais_loja_alerta['meta'])})."
+                    ))
+
+    if not alertas:
+        st.success(
+            "✅ Nenhum alerta no momento — ritmo de meta e comparativo com o mês anterior dentro "
+            "do esperado."
+        )
+    else:
+        for icone, texto in sorted(alertas, key=lambda a: a[0] != "🔴"):
+            (st.error if icone == "🔴" else st.warning)(texto)
 
     st.markdown("---")
 
     # ---- Comparativo mês a mês e ano a ano ----
     st.markdown("### 🔄 Comparativo Mês a Mês e Ano a Ano")
 
-    ano_ant, mes_ant = db.mes_anterior(ano_filtro, mes_filtro)
     totais_mes_anterior = db.get_totais_mes(ano_ant, mes_ant, loja=loja_filtro)
     totais_ano_anterior = db.get_totais_mes(ano_filtro - 1, mes_filtro, loja=loja_filtro)
 
@@ -1282,7 +1368,6 @@ with tab_dashboard:
 
     # ---- Ranking de vendedores ----
     st.markdown("### 🏆 Ranking de Vendedores")
-    indicadores_atual = db.get_indicadores_vendedores_mes(ano_filtro, mes_filtro, loja=loja_filtro)
     ranking = indicadores_atual.rename(columns={"ticket_medio": "ticket_medio_ind"}).sort_values(
         "realizado", ascending=False
     )
@@ -1295,12 +1380,23 @@ with tab_dashboard:
         ranking_fmt["Realizado"] = ranking_fmt["realizado"].apply(db.formatar_moeda)
         ranking_fmt["Atingimento (%)"] = ranking_fmt["atingimento_pct"].apply(lambda v: f"{v:.1f}%")
         ranking_fmt["Ticket Médio"] = ranking_fmt["ticket_medio_ind"].apply(db.formatar_moeda)
+        ranking_fmt["Projeção de Fechamento"] = ranking_fmt["projecao_fechamento"].apply(db.formatar_moeda)
+        ranking_fmt["Ritmo de Meta (%)"] = ranking_fmt["projecao_pct"].apply(
+            lambda v: "—" if pd.isna(v) else f"{v:.0f}%"
+        )
         st.dataframe(
             ranking_fmt[
-                ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "pedidos", "Ticket Médio"]
+                ["nome", "loja", "Meta", "Realizado", "Atingimento (%)", "pedidos", "Ticket Médio",
+                 "Projeção de Fechamento", "Ritmo de Meta (%)"]
             ].rename(columns={"nome": "Nome", "loja": "Loja", "pedidos": "Pedidos"}),
             use_container_width=True,
             hide_index=True,
+        )
+        st.caption(
+            "Ritmo de Meta (%) = projeção de fechamento (realizado ÷ dias úteis transcorridos × "
+            "dias úteis do mês) ÷ meta do mês — em outras palavras, \"no ritmo atual, fecha o mês "
+            "em X% da meta\". Considera só dias úteis já transcorridos; sem meta lançada aparece "
+            "como \"—\"."
         )
 
     st.markdown("---")
