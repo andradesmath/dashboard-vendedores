@@ -181,10 +181,19 @@ def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="
     campo_ini = page.locator("input[name='data_inicial']")
     campo_fim = page.locator("input[name='data_final']")
     if campo_ini.count() > 0 and campo_fim.count() > 0:
-        campo_ini.first.fill(data_ini_str)
-        campo_ini.first.press("Tab")
-        campo_fim.first.fill(data_fim_str)
-        campo_fim.first.press("Tab")
+        # O campo é um bootstrap-datepicker (jQuery) — .fill() seta o value via DOM
+        # e não necessariamente dispara os eventos de teclado que esse tipo de
+        # plugin escuta pra atualizar o estado INTERNO dele (o texto pode aparecer
+        # certo na tela e mesmo assim o relatório sair com a data antiga, porque o
+        # plugin nunca "soube" que o valor mudou). Por isso aqui: clica, seleciona
+        # tudo, digita de verdade caractere a caractere (dispara os eventos de
+        # teclado) e fecha um eventual calendário aberto com Escape (sem clicar
+        # num dia do calendário, que sobrescreveria o que foi digitado).
+        for campo, valor in ((campo_ini.first, data_ini_str), (campo_fim.first, data_fim_str)):
+            campo.click()
+            campo.press("Control+A")
+            campo.press_sequentially(valor, delay=30)
+            campo.press("Escape")
         return True
 
     ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
@@ -304,24 +313,22 @@ def navegar_ate_totais_de_vendas_por_produto(page):
     page.wait_for_timeout(1500)
 
 
-def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_fim_str):
+def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_fim_str, loja=None):
     """Assume que já está na página 'Totais de Vendas' (ver navegar_ate_totais_de_vendas).
     Reseleciona a Empresa (o valor não acompanha automaticamente o do login) e o
     período pedido, clica em PDF e retorna os bytes.
 
-    IMPORTANTE (bug corrigido, confirmado via HTML real capturado em debug):
-    os campos de período desse formulário são um widget bootstrap-datepicker
+    IMPORTANTE (bug em investigação, confirmado via HTML/PDF reais capturados em
+    debug): os campos de período desse formulário são um widget bootstrap-datepicker
     (input-daterange) com <input name="data_inicial"> e <input name="data_final">
     — o <label for="data_inicial"> desse form NÃO tem um id correspondente no
     input (só o atributo name), então page.get_by_label() nunca encontrava o
-    campo. O fallback genérico por input[type=text] era ainda pior: caía na
-    caixa de busca escondida de um dos dropdowns bootstrap-select (Status, Tipo
-    de Orçamento etc., que também são <input type=text> internamente), travando
-    o fill() por 30s. Os dois problemas juntos faziam o formulário sempre ficar
-    com a data padrão dele (hoje), então todo pedido de reprocessar um dia
-    específico na prática só repetia o dia da execução — confirmado comparando
-    um PDF gerado manualmente pro dia 20/08 com o que a automação capturou
-    pedindo esse mesmo dia: o conteúdo voltou do dia 21/08 (hoje)."""
+    campo. Mesmo apontando direto pro seletor certo, o relatório continuou saindo
+    com a data de hoje — sinal de que .fill() não é suficiente pra esse widget
+    (plugins jQuery de data costumam só atualizar o estado interno deles com
+    eventos de teclado de verdade, não com o value setado direto via DOM). Por
+    isso agora simula digitação real (click + selecionar tudo + digitar
+    caractere a caractere) e fecha o calendário com Escape."""
     selecionar_empresa_no_formulario(page, empresa_texto)
 
     preenchido = _preencher_data_inicial_final(page, data_ini_str, data_fim_str, "Data Inicial", "Data Final")
@@ -331,6 +338,8 @@ def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_
             "no formulário 'Totais de Vendas' — o relatório provavelmente vai sair com a data "
             "padrão do formulário (hoje), não a pedida."
         )
+    if loja:
+        _salvar_debug(page, loja, "form_vendas_depois_periodo")
 
     botao_pdf = page.get_by_role("button", name="PDF", exact=False)
     return _capturar_pdf_via_clique(page, context, botao_pdf)
@@ -357,7 +366,7 @@ def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa
 
         navegar_ate_totais_de_vendas(page)
         _salvar_debug(page, loja, "form_vendas_antes_empresa")
-        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_str, data_str)
+        pdf_vendas = gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_str, data_str, loja=loja)
 
         navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "form_produto_antes_preencher")
