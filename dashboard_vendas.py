@@ -805,9 +805,11 @@ with tab_lancamentos:
 
     with st.expander("📦 Reprocessar um mês de Vendas por Produto", expanded=False):
         st.caption(
-            "Puxa de novo o relatório 'Totais de Vendas Por Produto' de UM MÊS inteiro específico "
-            "(útil pra corrigir/completar um mês do histórico sem rodar o backfill todo de novo). "
-            "Mesmo tempo de espera do botão acima — roda no GitHub Actions."
+            "Puxa de novo o relatório 'Totais de Vendas Por Produto' de UM MÊS específico "
+            "(útil pra corrigir/completar um mês sem rodar o backfill todo de novo). Se o mês "
+            "escolhido for o mês corrente, reprocessa **dia a dia** (um relatório por dia, "
+            "sobrescrevendo cada dia individualmente); meses já fechados são reprocessados como "
+            "um único total mensal. Pode demorar alguns minutos — roda no GitHub Actions."
         )
         col_bf1, col_bf2, col_bf3, col_bf4 = st.columns([1, 1, 1, 1.4])
         with col_bf1:

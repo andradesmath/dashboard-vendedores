@@ -126,6 +126,23 @@ def backfill_loja(playwright, loja, hoje, headed=False, mes_especifico=None):
 
         if mes_especifico is not None:
             ano, mes = mes_especifico
+            if (ano, mes) == (hoje.year, hoje.month):
+                # Mês corrente: reprocessa DIA A DIA (mesma granularidade da
+                # sincronização normal) — sobrescreve cada dia individualmente,
+                # em vez de um único lançamento agregado do mês inteiro. Isso é
+                # o que permite corrigir o mês atual inteiro (todo vendedor,
+                # todo dia) com um clique só, usando sempre o relatório
+                # validado ("Totais de Vendas Por Produto").
+                dia = date(ano, mes, 1)
+                while dia <= hoje:
+                    data_str = dia.strftime("%d/%m/%Y")
+                    rotulo = f"{data_str} (dia)"
+                    print(f"  [{loja}] gerando relatório de {rotulo}...")
+                    pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
+                    _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
+                    dia += timedelta(days=1)
+                return
+
             ultimo_dia = calendar.monthrange(ano, mes)[1]
             data_ini_str = date(ano, mes, 1).strftime("%d/%m/%Y")
             data_fim_str = date(ano, mes, ultimo_dia).strftime("%d/%m/%Y")
