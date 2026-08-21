@@ -183,17 +183,18 @@ def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="
     if campo_ini.count() > 0 and campo_fim.count() > 0:
         # O campo é um bootstrap-datepicker (jQuery) — .fill() seta o value via DOM
         # e não necessariamente dispara os eventos de teclado que esse tipo de
-        # plugin escuta pra atualizar o estado INTERNO dele (o texto pode aparecer
-        # certo na tela e mesmo assim o relatório sair com a data antiga, porque o
-        # plugin nunca "soube" que o valor mudou). Por isso aqui: clica, seleciona
-        # tudo, digita de verdade caractere a caractere (dispara os eventos de
-        # teclado) e fecha um eventual calendário aberto com Escape (sem clicar
-        # num dia do calendário, que sobrescreveria o que foi digitado).
+        # plugin escuta pra atualizar o estado INTERNO dele. Confirmado com o
+        # usuário testando manualmente no site: clicar abre um calendário, dá pra
+        # digitar no padrão DD/MM/AAAA, e é o TAB que confirma/muda de campo (uma
+        # tentativa anterior usando Escape pra fechar o calendário na verdade
+        # CANCELAVA a digitação, por isso o valor nunca mudava). Por isso aqui:
+        # clica, seleciona tudo, digita de verdade caractere a caractere (dispara
+        # os eventos de teclado que o plugin escuta) e confirma com Tab.
         for campo, valor in ((campo_ini.first, data_ini_str), (campo_fim.first, data_fim_str)):
             campo.click()
             campo.press("Control+A")
             campo.press_sequentially(valor, delay=30)
-            campo.press("Escape")
+            campo.press("Tab")
         return True
 
     ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
