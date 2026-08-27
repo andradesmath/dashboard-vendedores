@@ -15,20 +15,30 @@ on:
           - "Porteira"
           - "Casa de Adubo"
       ano:
-        description: "Ano do mês específico a reprocessar (deixe em branco pra rodar o histórico completo: set/2025 até hoje)"
+        description: "Ano inicial do período a reprocessar DIA A DIA (deixe em branco pra rodar o histórico completo: set/2025 até hoje)"
         required: false
         type: string
       mes:
-        description: "Mês específico, 1-12 (usar junto com 'ano')"
+        description: "Mês inicial, 1-12 (usar junto com 'ano')"
+        required: false
+        type: string
+      ano_fim:
+        description: "Ano final do período (deixe em branco = igual ao ano inicial, ou seja, só um mês)"
+        required: false
+        type: string
+      mes_fim:
+        description: "Mês final, 1-12 (deixe em branco = igual ao mês inicial)"
         required: false
         type: string
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    # Puxa dezenas de relatórios por loja (11 meses + os dias do mês corrente) —
-    # bem mais demorado que a sincronização diária normal.
-    timeout-minutes: 90
+    # Sem ano/mes: dezenas de relatórios por loja (11 meses + os dias do mês corrente).
+    # Com ano/mes (e principalmente com um período de vários meses via ano_fim/mes_fim),
+    # roda DIA A DIA — pode ser bem mais demorado ainda (1 relatório por dia por loja).
+    # 340min fica dentro do teto de 360min (6h) dos runners hospedados do GitHub.
+    timeout-minutes: 340
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
@@ -58,6 +68,12 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.ano }}" ] && [ -n "${{ github.event.inputs.mes }}" ]; then
             ARGS="$ARGS --ano ${{ github.event.inputs.ano }} --mes ${{ github.event.inputs.mes }}"
+            if [ -n "${{ github.event.inputs.ano_fim }}" ]; then
+              ARGS="$ARGS --ano-fim ${{ github.event.inputs.ano_fim }}"
+            fi
+            if [ -n "${{ github.event.inputs.mes_fim }}" ]; then
+              ARGS="$ARGS --mes-fim ${{ github.event.inputs.mes_fim }}"
+            fi
           fi
           eval python scripts/backfill_produtos.py $ARGS
 

@@ -96,12 +96,18 @@ def disparar_sincronizacao(loja=None, data=None, ref="main"):
     return disparar_workflow(WORKFLOW_SYNC_DIARIO, inputs=inputs, ref=ref)
 
 
-def disparar_backfill_mes(ano, mes, loja=None, ref="main"):
-    """Dispara o workflow backfill_produtos.yml pra reprocessar só UM mês (ano/mes)
-    de Vendas por Produto — sem rodar o histórico completo de novo."""
+def disparar_backfill_mes(ano, mes, loja=None, ano_fim=None, mes_fim=None, ref="main"):
+    """Dispara o workflow backfill_produtos.yml pra reprocessar DIA A DIA um período de
+    Vendas por Produto — de ano/mes até ano_fim/mes_fim (inclusive), ou só ano/mes se
+    ano_fim/mes_fim não forem informados (equivale a reprocessar só aquele mês, mas ainda
+    assim dia a dia) — sem rodar o histórico completo de novo."""
     inputs = {"ano": str(ano), "mes": str(mes)}
     if loja:
         inputs["loja"] = loja
+    if ano_fim:
+        inputs["ano_fim"] = str(ano_fim)
+    if mes_fim:
+        inputs["mes_fim"] = str(mes_fim)
     return disparar_workflow(WORKFLOW_BACKFILL_PRODUTOS, inputs=inputs, ref=ref)
 
 

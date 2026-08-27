@@ -17,9 +17,13 @@ página do relatório UMA VEZ e fica gerando de novo (troca as datas, clica em
 Imprimir de novo) pra não logar dezenas de vezes.
 
 Uso:
-    python scripts/backfill_produtos.py                 # todas as lojas configuradas
+    python scripts/backfill_produtos.py                 # todas as lojas, histórico completo
     python scripts/backfill_produtos.py --loja Porteira  # só uma loja
     python scripts/backfill_produtos.py --headed         # navegador visível (debug local)
+    python scripts/backfill_produtos.py --ano 2026 --mes 8
+        # reprocessa DIA A DIA só agosto/2026 (passado ou corrente)
+    python scripts/backfill_produtos.py --ano 2026 --mes 6 --ano-fim 2026 --mes-fim 8
+        # reprocessa DIA A DIA de junho/2026 até agosto/2026, tudo seguido
 
 Mesmas variáveis de ambiente de scripts/sync_sgi.py (DATABASE_URL, SGI_URL_LOGIN,
 SGI_LOGIN, SGI_SENHA, SGI_EMPRESA_PORTEIRA, SGI_EMPRESA_CASA_ADUBO). Rodagem
@@ -107,12 +111,19 @@ def _processar_pdf_produtos(loja, data_tag, pdf_bytes, rotulo):
     return len(matched)
 
 
-def backfill_loja(playwright, loja, hoje, headed=False, mes_especifico=None):
-    """Se `mes_especifico` for informado (tupla (ano, mes)), puxa só ESSE mês
-    inteiro (útil pra reprocessar um mês pontual sem rodar o histórico todo de
-    novo). Senão, roda o backfill completo: histórico mensal de
-    INICIO_HISTORICO_ANO/MES até o mês anterior ao atual, mais o mês atual dia a
-    dia."""
+def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=None):
+    """Se `intervalo_especifico` for informado (tupla (ano_ini, mes_ini, ano_fim, mes_fim)),
+    reprocessa DIA A DIA (mesma granularidade da sincronização normal — um relatório por
+    dia, sobrescrevendo cada dia individualmente) todo o período do 1º dia de
+    ano_ini/mes_ini até o último dia de ano_fim/mes_fim (truncado em `hoje`, se for o caso).
+    Cobre tanto um único mês (ano_ini/mes_ini == ano_fim/mes_fim) quanto vários meses
+    seguidos, passados ou o corrente — útil pra corrigir/completar um período sem rodar o
+    backfill histórico completo de novo.
+
+    Senão (intervalo_especifico=None), roda o backfill completo padrão (pensado pra
+    importação inicial, de uma vez só): histórico mensal AGREGADO (um relatório por mês
+    inteiro) de INICIO_HISTORICO_ANO/MES até o mês anterior ao atual, mais o mês atual dia
+    a dia."""
     url_login = os.environ["SGI_URL_LOGIN"]
     login = os.environ["SGI_LOGIN"]
     senha = os.environ["SGI_SENHA"]
@@ -124,32 +135,18 @@ def backfill_loja(playwright, loja, hoje, headed=False, mes_especifico=None):
         navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "backfill_form_antes")
 
-        if mes_especifico is not None:
-            ano, mes = mes_especifico
-            if (ano, mes) == (hoje.year, hoje.month):
-                # Mês corrente: reprocessa DIA A DIA (mesma granularidade da
-                # sincronização normal) — sobrescreve cada dia individualmente,
-                # em vez de um único lançamento agregado do mês inteiro. Isso é
-                # o que permite corrigir o mês atual inteiro (todo vendedor,
-                # todo dia) com um clique só, usando sempre o relatório
-                # validado ("Totais de Vendas Por Produto").
-                dia = date(ano, mes, 1)
-                while dia <= hoje:
-                    data_str = dia.strftime("%d/%m/%Y")
-                    rotulo = f"{data_str} (dia)"
-                    print(f"  [{loja}] gerando relatório de {rotulo}...")
-                    pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
-                    _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
-                    dia += timedelta(days=1)
-                return
-
-            ultimo_dia = calendar.monthrange(ano, mes)[1]
-            data_ini_str = date(ano, mes, 1).strftime("%d/%m/%Y")
-            data_fim_str = date(ano, mes, ultimo_dia).strftime("%d/%m/%Y")
-            rotulo = f"{db.MESES_PT[mes]}/{ano} (mês inteiro)"
-            print(f"  [{loja}] gerando relatório de {rotulo}...")
-            pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str)
-            _processar_pdf_produtos(loja, date(ano, mes, 1), pdf_bytes, rotulo)
+        if intervalo_especifico is not None:
+            ano_ini, mes_ini, ano_fim, mes_fim = intervalo_especifico
+            ultimo_dia_fim = calendar.monthrange(ano_fim, mes_fim)[1]
+            dia = date(ano_ini, mes_ini, 1)
+            dia_fim = min(date(ano_fim, mes_fim, ultimo_dia_fim), hoje)
+            while dia <= dia_fim:
+                data_str = dia.strftime("%d/%m/%Y")
+                rotulo = f"{data_str} (dia)"
+                print(f"  [{loja}] gerando relatório de {rotulo}...")
+                pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
+                _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
+                dia += timedelta(days=1)
             return
 
         ano_fim_hist, mes_fim_hist = db.mes_anterior(hoje.year, hoje.month)
@@ -189,16 +186,30 @@ def main():
     parser.add_argument("--loja", choices=list(LOJA_PARA_EMPRESA_ENV.keys()), help="Rodar só uma loja.")
     parser.add_argument(
         "--ano", type=int,
-        help="Ano do mês específico a puxar (usar junto com --mes). Sem isso, roda o histórico completo.",
+        help="Ano inicial do período a reprocessar DIA A DIA (usar junto com --mes). "
+             "Sem isso, roda o histórico completo (mensal agregado).",
     )
     parser.add_argument(
         "--mes", type=int,
-        help="Mês específico a puxar, 1-12 (usar junto com --ano) — só esse mês, sem rodar o histórico inteiro.",
+        help="Mês inicial do período, 1-12 (usar junto com --ano) — reprocessa dia a dia a "
+             "partir daqui, sem rodar o histórico inteiro.",
+    )
+    parser.add_argument(
+        "--ano-fim", type=int,
+        help="Ano final do período (default: igual a --ano, ou seja, só um mês).",
+    )
+    parser.add_argument(
+        "--mes-fim", type=int,
+        help="Mês final do período, 1-12 (default: igual a --mes).",
     )
     parser.add_argument("--headed", action="store_true", help="Abre o navegador visível (só faz sentido local).")
     args = parser.parse_args()
 
-    mes_especifico = (args.ano, args.mes) if args.ano and args.mes else None
+    intervalo_especifico = None
+    if args.ano and args.mes:
+        ano_fim = args.ano_fim or args.ano
+        mes_fim = args.mes_fim or args.mes
+        intervalo_especifico = (args.ano, args.mes, ano_fim, mes_fim)
 
     hoje = date.today()
     lojas = [args.loja] if args.loja else obter_lojas_configuradas()
@@ -213,7 +224,7 @@ def main():
     with sync_playwright() as playwright:
         for loja in lojas:
             try:
-                backfill_loja(playwright, loja, hoje, headed=args.headed, mes_especifico=mes_especifico)
+                backfill_loja(playwright, loja, hoje, headed=args.headed, intervalo_especifico=intervalo_especifico)
             except Exception as e:
                 erros.append(f"{loja}: {e}")
                 print(f"[{loja}] ERRO: {e}")

@@ -803,56 +803,88 @@ with tab_lancamentos:
             except github_actions.SincronizacaoIndisponivel as e:
                 st.error(str(e))
 
-    with st.expander("📦 Reprocessar um mês de Vendas por Produto", expanded=False):
+    with st.expander("📦 Reprocessar um período de Vendas por Produto (dia a dia)", expanded=False):
         st.caption(
-            "Puxa de novo o relatório 'Totais de Vendas Por Produto' de UM MÊS específico "
-            "(útil pra corrigir/completar um mês sem rodar o backfill todo de novo). Se o mês "
-            "escolhido for o mês corrente, reprocessa **dia a dia** (um relatório por dia, "
-            "sobrescrevendo cada dia individualmente); meses já fechados são reprocessados como "
-            "um único total mensal. Pode demorar alguns minutos — roda no GitHub Actions."
+            "Puxa de novo o relatório 'Totais de Vendas Por Produto' **dia a dia** — um relatório "
+            "por dia, sobrescrevendo cada dia individualmente — para o período escolhido (pode ser "
+            "só um mês, ou vários meses seguidos, passados ou o corrente). Útil pra corrigir/"
+            "completar um período sem rodar o backfill inteiro de novo. Quanto maior o período, "
+            "mais relatórios precisam ser gerados — pode demorar bastante (veja a estimativa "
+            "abaixo). Roda no GitHub Actions."
         )
-        col_bf1, col_bf2, col_bf3, col_bf4 = st.columns([1, 1, 1, 1.4])
+        col_bf1, col_bf2, col_bf3, col_bf4, col_bf5 = st.columns([1, 0.9, 1.3, 0.9, 1.3])
         with col_bf1:
             loja_bf = st.selectbox("Loja", ["Ambas"] + db.LOJAS, key="loja_backfill_mes")
         with col_bf2:
-            ano_bf = st.number_input(
-                "Ano", min_value=2024, max_value=date.today().year, value=date.today().year,
-                step=1, key="ano_backfill_mes",
+            ano_ini_bf = st.number_input(
+                "De (ano)", min_value=2024, max_value=date.today().year, value=date.today().year,
+                step=1, key="ano_ini_backfill",
             )
         with col_bf3:
-            mes_bf = st.selectbox(
-                "Mês", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
-                index=date.today().month - 1, key="mes_backfill_mes",
+            mes_ini_bf = st.selectbox(
+                "De (mês)", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                index=date.today().month - 1, key="mes_ini_backfill",
             )
         with col_bf4:
-            st.write("")
-            disparar_bf = st.button("📦 Puxar esse mês agora", key="btn_backfill_mes")
+            ano_fim_bf = st.number_input(
+                "Até (ano)", min_value=2024, max_value=date.today().year, value=date.today().year,
+                step=1, key="ano_fim_backfill",
+            )
+        with col_bf5:
+            mes_fim_bf = st.selectbox(
+                "Até (mês)", list(db.MESES_PT.keys()), format_func=lambda m: db.MESES_PT[m],
+                index=date.today().month - 1, key="mes_fim_backfill",
+            )
 
-        # ---- Confirmação visual do que será reprocessado, pra evitar reprocessar
-        # o mês errado por engano (ex.: seletor ficou num valor de um teste anterior) ----
         hoje_bf = date.today()
-        eh_mes_corrente_bf = (int(ano_bf), int(mes_bf)) == (hoje_bf.year, hoje_bf.month)
+        intervalo_invalido_bf = (int(ano_ini_bf), int(mes_ini_bf)) > (int(ano_fim_bf), int(mes_fim_bf))
         loja_bf_label = "Porteira e Casa de Adubo" if loja_bf == "Ambas" else loja_bf
-        if eh_mes_corrente_bf:
-            st.info(
-                f"➡️ Vai reprocessar **{db.MESES_PT[int(mes_bf)]}/{int(ano_bf)}** (mês corrente) "
-                f"para **{loja_bf_label}**, **dia a dia** (1 relatório por dia, do dia 1º até hoje)."
-            )
-        else:
-            st.warning(
-                f"➡️ Vai reprocessar **{db.MESES_PT[int(mes_bf)]}/{int(ano_bf)}** para "
-                f"**{loja_bf_label}** como **um único total mensal** (mês já fechado — não dá "
-                "detalhe por dia). Confira se o mês/ano acima estão corretos antes de continuar."
-            )
+        n_lojas_bf = 2 if loja_bf == "Ambas" else 1
 
-        if disparar_bf:
+        if intervalo_invalido_bf:
+            st.error("O período \"De\" precisa ser antes (ou igual a) o período \"Até\".")
+            disparar_bf = st.button("📦 Puxar esse período agora", key="btn_backfill_mes", disabled=True)
+        else:
+            data_ini_bf = date(int(ano_ini_bf), int(mes_ini_bf), 1)
+            ultimo_dia_fim_bf = calendar.monthrange(int(ano_fim_bf), int(mes_fim_bf))[1]
+            data_fim_bf = min(date(int(ano_fim_bf), int(mes_fim_bf), ultimo_dia_fim_bf), hoje_bf)
+            n_dias_bf = (data_fim_bf - data_ini_bf).days + 1
+            n_relatorios_bf = n_dias_bf * n_lojas_bf
+            estimativa_min_bf = max(1, round(n_relatorios_bf * 8 / 60))  # ~8s por relatório
+
+            # ---- Confirmação visual do que será reprocessado, pra evitar reprocessar o
+            # período errado por engano (ex.: seletor ficou num valor de um teste anterior) ----
+            if data_ini_bf.strftime("%Y-%m") == data_fim_bf.strftime("%Y-%m"):
+                rotulo_periodo_bf = f"**{db.MESES_PT[int(mes_ini_bf)]}/{int(ano_ini_bf)}**"
+            else:
+                rotulo_periodo_bf = (
+                    f"**{db.MESES_PT[int(mes_ini_bf)]}/{int(ano_ini_bf)}** até "
+                    f"**{db.MESES_PT[data_fim_bf.month]}/{data_fim_bf.year}**"
+                )
+            msg_bf = (
+                f"➡️ Vai reprocessar {rotulo_periodo_bf} para **{loja_bf_label}**, dia a dia "
+                f"({n_dias_bf} dia(s) × {n_lojas_bf} loja(s) = {n_relatorios_bf} relatório(s) — "
+                f"estimativa de ~{estimativa_min_bf} min)."
+            )
+            if n_relatorios_bf > 90:
+                st.warning(msg_bf + " Período grande — considere rodar em partes menores se puder.")
+            else:
+                st.info(msg_bf)
+
+            col_bf6, _ = st.columns([1.4, 3])
+            with col_bf6:
+                disparar_bf = st.button("📦 Puxar esse período agora", key="btn_backfill_mes")
+
+        if not intervalo_invalido_bf and disparar_bf:
             try:
                 loja_bf_param = None if loja_bf == "Ambas" else loja_bf
                 disparado_em_bf = github_actions.disparar_backfill_mes(
-                    int(ano_bf), int(mes_bf), loja=loja_bf_param
+                    int(ano_ini_bf), int(mes_ini_bf),
+                    loja=loja_bf_param,
+                    ano_fim=int(ano_fim_bf), mes_fim=int(mes_fim_bf),
                 )
                 status_placeholder_bf = st.empty()
-                with st.spinner(f"Puxando {db.MESES_PT[int(mes_bf)]}/{int(ano_bf)} do SGI..."):
+                with st.spinner(f"Puxando {rotulo_periodo_bf.replace('**', '')} do SGI, dia a dia..."):
                     sucesso_bf, url_run_bf = github_actions.aguardar_conclusao(
                         disparado_em_bf,
                         workflow_arquivo=github_actions.WORKFLOW_BACKFILL_PRODUTOS,
@@ -860,7 +892,7 @@ with tab_lancamentos:
                     )
                 if sucesso_bf:
                     db.limpar_cache()
-                    st.success("Mês reprocessado! Atualizando os números...")
+                    st.success("Período reprocessado! Atualizando os números...")
                     st.session_state.versao_dados += 1
                     st.rerun()
                 elif sucesso_bf is False:
