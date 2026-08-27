@@ -828,6 +828,23 @@ with tab_lancamentos:
             st.write("")
             disparar_bf = st.button("📦 Puxar esse mês agora", key="btn_backfill_mes")
 
+        # ---- Confirmação visual do que será reprocessado, pra evitar reprocessar
+        # o mês errado por engano (ex.: seletor ficou num valor de um teste anterior) ----
+        hoje_bf = date.today()
+        eh_mes_corrente_bf = (int(ano_bf), int(mes_bf)) == (hoje_bf.year, hoje_bf.month)
+        loja_bf_label = "Porteira e Casa de Adubo" if loja_bf == "Ambas" else loja_bf
+        if eh_mes_corrente_bf:
+            st.info(
+                f"➡️ Vai reprocessar **{db.MESES_PT[int(mes_bf)]}/{int(ano_bf)}** (mês corrente) "
+                f"para **{loja_bf_label}**, **dia a dia** (1 relatório por dia, do dia 1º até hoje)."
+            )
+        else:
+            st.warning(
+                f"➡️ Vai reprocessar **{db.MESES_PT[int(mes_bf)]}/{int(ano_bf)}** para "
+                f"**{loja_bf_label}** como **um único total mensal** (mês já fechado — não dá "
+                "detalhe por dia). Confira se o mês/ano acima estão corretos antes de continuar."
+            )
+
         if disparar_bf:
             try:
                 loja_bf_param = None if loja_bf == "Ambas" else loja_bf
