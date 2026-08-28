@@ -501,7 +501,32 @@ def get_metas_mes(ano, mes, loja=None):
 # --------------------------------------------------------------------------
 # Vendas diárias
 # --------------------------------------------------------------------------
+def _ano_mes_de(data_venda):
+    if isinstance(data_venda, str):
+        data_venda = date.fromisoformat(data_venda)
+    return data_venda.year, data_venda.month
+
+
+def _remover_manual_obsoleto(conn, vendedor_id, ano, mes):
+    """Um lançamento diário real chegou pra esse vendedor/mês — qualquer valor
+    mensal MANUAL (realizado_mensal_manual/pedidos_mensal_manual, pensados só
+    como fallback pra meses SEM detalhe diário) fica obsoleto e precisa sumir:
+    se não for removido, get_totais_mes/get_indicadores_vendedores_mes somam os
+    dois por cima um do outro (diário + manual), duplicando o realizado/pedidos
+    do mês inteiro. Chamado de dentro da mesma transação de todo upsert em
+    vendas_diarias."""
+    conn.execute(
+        text("DELETE FROM realizado_mensal_manual WHERE vendedor_id=:vid AND ano=:ano AND mes=:mes"),
+        {"vid": vendedor_id, "ano": ano, "mes": mes},
+    )
+    conn.execute(
+        text("DELETE FROM pedidos_mensal_manual WHERE vendedor_id=:vid AND ano=:ano AND mes=:mes"),
+        {"vid": vendedor_id, "ano": ano, "mes": mes},
+    )
+
+
 def upsert_venda(vendedor_id, data_venda, valor_realizado, qtd_pedidos):
+    ano, mes = _ano_mes_de(data_venda)
     with get_engine().begin() as conn:
         conn.execute(
             text(
@@ -520,6 +545,7 @@ def upsert_venda(vendedor_id, data_venda, valor_realizado, qtd_pedidos):
                 "qtd_pedidos": qtd_pedidos,
             },
         )
+        _remover_manual_obsoleto(conn, vendedor_id, ano, mes)
     limpar_cache()
 
 
@@ -527,6 +553,7 @@ def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
     """Lança/atualiza só o valor vendido do dia, sem mexer na quantidade de pedidos
     já registrada (se o dia ainda não existir, cria com 0 pedidos)."""
     data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    ano, mes = _ano_mes_de(data_venda)
     with get_engine().begin() as conn:
         conn.execute(
             text(
@@ -539,6 +566,7 @@ def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "valor_realizado": valor_realizado},
         )
+        _remover_manual_obsoleto(conn, vendedor_id, ano, mes)
     limpar_cache()
 
 
@@ -546,6 +574,7 @@ def upsert_pedidos_dia(vendedor_id, data_venda, qtd_pedidos):
     """Lança/atualiza só a quantidade de pedidos no dia, sem mexer no valor
     vendido já registrado (se o dia ainda não existir, cria com valor R$ 0)."""
     data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    ano, mes = _ano_mes_de(data_venda)
     with get_engine().begin() as conn:
         conn.execute(
             text(
@@ -558,6 +587,7 @@ def upsert_pedidos_dia(vendedor_id, data_venda, qtd_pedidos):
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "qtd_pedidos": qtd_pedidos},
         )
+        _remover_manual_obsoleto(conn, vendedor_id, ano, mes)
     limpar_cache()
 
 
@@ -1700,6 +1730,22 @@ def get_indicadores_vendedores_mes(ano, mes, loja=None):
         lambda r: (r["realizado"] / r["pedidos"]) if r["pedidos"] > 0 else 0.0, axis=1
     )
     return resultado
+
+
+def dias_uteis_no_mes(ano, mes):
+    """Conta quantos dias úteis (segunda a sábado, domingo não conta) o mês tem NO TOTAL,
+    de ponta a ponta — usado como valor padrão mais realista do que a constante fixa
+    DIAS_UTEIS_PADRAO (24), que fica errada pra meses com 5 sábados/segundas (26+ dias
+    úteis) e faz a projeção de fechamento "grudar" no realizado antes do fim do mês."""
+    primeiro_dia = date(ano, mes, 1)
+    ultimo_dia_mes = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    count = 0
+    d = primeiro_dia
+    while d <= ultimo_dia_mes:
+        if d.weekday() != 6:  # 6 = domingo
+            count += 1
+        d += timedelta(days=1)
+    return count
 
 
 def dias_uteis_transcorridos(ano, mes, dias_uteis_total=DIAS_UTEIS_PADRAO, referencia=None):

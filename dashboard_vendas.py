@@ -1213,9 +1213,15 @@ with tab_dashboard:
             index=date.today().month - 1, key="mes_dash",
         )
     with fcol4:
+        # Chave inclui ano/mês pra recalcular o padrão (dias úteis reais do mês
+        # escolhido — pode ser 24, 25, 26 ou 27 dependendo de quantos domingos ele
+        # tem) sempre que o filtro de mês mudar, em vez de ficar preso num valor de
+        # outro mês. Value só é usado a primeira vez que essa chave aparece — depois
+        # disso o usuário pode ajustar livremente pra descontar feriados.
         dias_uteis_total = st.number_input(
             "Dias úteis no mês (confirme feriados)", min_value=1, max_value=31,
-            value=db.DIAS_UTEIS_PADRAO, step=1, key="dias_uteis_dash",
+            value=db.dias_uteis_no_mes(int(ano_filtro), int(mes_filtro)), step=1,
+            key=f"dias_uteis_dash_{int(ano_filtro)}_{int(mes_filtro)}",
         )
 
     ano_filtro = int(ano_filtro)
