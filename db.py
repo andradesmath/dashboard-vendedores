@@ -30,6 +30,27 @@ except ImportError:
 LOJAS = ["Porteira", "Casa de Adubo"]
 DIAS_UTEIS_PADRAO = 24  # segunda a sábado; usuário pode ajustar no dashboard (feriados)
 
+# Fragmento SQL reaproveitado em todo upsert de vendas_diarias/vendas_produtos_diarias
+# pra "congelar" no registro a loja que era EFETIVA na data da venda (não a loja atual
+# do vendedor) — assim uma transferência de loja (ver transferir_vendedor_loja) não
+# reescreve o passado, mesmo que um dia antigo seja resincronizado/reprocessado DEPOIS
+# da transferência. Regra: usa a loja_nova da transferência mais recente com
+# data_efetiva <= data da venda; se não houver nenhuma (venda anterior a qualquer
+# transferência já registrada), usa a loja_anterior da PRIMEIRA transferência já
+# registrada (o que o vendedor era antes de qualquer mudança); se o vendedor nunca
+# foi transferido, usa a loja atual em vendedores. Espera os binds :vendedor_id e :data.
+LOJA_NA_DATA_SQL = """
+    COALESCE(
+        (SELECT t.loja_nova FROM vendedor_transferencias t
+         WHERE t.vendedor_id = :vendedor_id AND t.data_efetiva <= :data
+         ORDER BY t.data_efetiva DESC LIMIT 1),
+        (SELECT t.loja_anterior FROM vendedor_transferencias t
+         WHERE t.vendedor_id = :vendedor_id
+         ORDER BY t.data_efetiva ASC LIMIT 1),
+        (SELECT v.loja FROM vendedores v WHERE v.id = :vendedor_id)
+    )
+"""
+
 # Início da base de dados do painel (primeiro mês com lançamentos confiáveis) —
 # usado para calcular médias históricas só a partir daqui.
 BASE_INICIO_ANO = 2026
@@ -240,6 +261,16 @@ def init_db():
             UNIQUE (vendedor_id, data, cod_produto)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS vendedor_transferencias (
+            id SERIAL PRIMARY KEY,
+            vendedor_id INTEGER NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+            loja_anterior TEXT NOT NULL CHECK (loja_anterior IN ('Porteira', 'Casa de Adubo')),
+            loja_nova TEXT NOT NULL CHECK (loja_nova IN ('Porteira', 'Casa de Adubo')),
+            data_efetiva DATE NOT NULL,
+            criado_em TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """,
     ]
     with get_engine().begin() as conn:
         # Trava (só durante esta transação) pra impedir que duas instâncias rodem as
@@ -293,6 +324,33 @@ def init_db():
             END $$;
             """
         ))
+        # Migração: suporte a transferência de vendedor entre lojas (ver
+        # transferir_vendedor_loja). Cada linha de vendas_diarias/vendas_produtos_diarias
+        # passa a guardar a SUA PRÓPRIA loja (congelada no momento do lançamento), em vez
+        # de depender só da loja atual do vendedor em vendedores.loja — senão, transferir
+        # alguém de loja reescreveria retroativamente TODO o histórico dela(e) nos
+        # relatórios por loja. Backfill roda uma única vez por linha (só preenche onde
+        # ainda está NULL) e usa a loja atual do vendedor — correto pra qualquer venda já
+        # lançada ANTES desta migração rodar, já que nenhuma transferência pode ter
+        # acontecido ainda nesse ponto.
+        conn.execute(text(
+            "ALTER TABLE vendas_diarias ADD COLUMN IF NOT EXISTS loja TEXT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE vendas_produtos_diarias ADD COLUMN IF NOT EXISTS loja TEXT"
+        ))
+        conn.execute(text(
+            """
+            UPDATE vendas_diarias vd SET loja = v.loja
+            FROM vendedores v WHERE v.id = vd.vendedor_id AND vd.loja IS NULL
+            """
+        ))
+        conn.execute(text(
+            """
+            UPDATE vendas_produtos_diarias vp SET loja = v.loja
+            FROM vendedores v WHERE v.id = vp.vendedor_id AND vp.loja IS NULL
+            """
+        ))
 
 
 # --------------------------------------------------------------------------
@@ -322,6 +380,89 @@ def delete_vendedor(vendedor_id):
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM vendedores WHERE id=:id"), {"id": vendedor_id})
     limpar_cache()
+
+
+def transferir_vendedor_loja(vendedor_id, loja_nova, data_efetiva):
+    """Registra a transferência de um vendedor pra outra loja, efetiva a partir de
+    `data_efetiva` (inclusive): vendas ANTERIORES a essa data continuam contando pra
+    loja antiga em todos os relatórios (Comparativo entre Lojas, rankings, histórico
+    etc.); vendas NESSA data em diante — já sincronizadas ou futuras, mesmo que
+    reprocessadas depois — passam a contar pra loja nova. Não apaga nem duplica
+    nenhum lançamento, só corrige a que loja cada um pertence.
+
+    Levanta ValueError se a loja nova for igual à atual ou se o vendedor não existir.
+    Retorna um dict com nome/loja_anterior/loja_nova pra mensagem de confirmação."""
+    if loja_nova not in LOJAS:
+        raise ValueError(f"Loja inválida: {loja_nova!r}")
+    data_str = data_efetiva.isoformat() if hasattr(data_efetiva, "isoformat") else data_efetiva
+
+    with get_engine().begin() as conn:
+        atual = conn.execute(
+            text("SELECT nome, loja FROM vendedores WHERE id=:id"), {"id": vendedor_id}
+        ).mappings().fetchone()
+        if atual is None:
+            raise ValueError("Vendedor não encontrado.")
+        loja_anterior = atual["loja"]
+        nome = atual["nome"]
+        if loja_anterior == loja_nova:
+            raise ValueError(f"'{nome}' já está na loja {loja_nova}.")
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO vendedor_transferencias (vendedor_id, loja_anterior, loja_nova, data_efetiva)
+                VALUES (:vid, :loja_anterior, :loja_nova, :data_efetiva)
+                """
+            ),
+            {
+                "vid": vendedor_id, "loja_anterior": loja_anterior, "loja_nova": loja_nova,
+                "data_efetiva": data_str,
+            },
+        )
+
+        # Corrige retroativamente os dias que JÁ estavam sincronizados entre a data
+        # efetiva e hoje (foram gravados com a loja antiga antes desta transferência
+        # existir) — dali em diante, todo upsert novo já usa LOJA_NA_DATA_SQL e acerta
+        # sozinho, mesmo em reprocessamentos futuros dessas mesmas datas.
+        conn.execute(
+            text("UPDATE vendas_diarias SET loja=:loja_nova WHERE vendedor_id=:vid AND data >= :data_efetiva"),
+            {"loja_nova": loja_nova, "vid": vendedor_id, "data_efetiva": data_str},
+        )
+        conn.execute(
+            text(
+                "UPDATE vendas_produtos_diarias SET loja=:loja_nova "
+                "WHERE vendedor_id=:vid AND data >= :data_efetiva"
+            ),
+            {"loja_nova": loja_nova, "vid": vendedor_id, "data_efetiva": data_str},
+        )
+
+        # Loja "atual" do cadastro passa a ser a nova — usada em listas de vendedores
+        # ativos, metas/pagamentos do mês corrente em diante, e como padrão pra
+        # qualquer venda futura que ainda não tenha uma transferência mais recente.
+        conn.execute(
+            text("UPDATE vendedores SET loja=:loja_nova WHERE id=:id"),
+            {"loja_nova": loja_nova, "id": vendedor_id},
+        )
+    limpar_cache()
+    return {"nome": nome, "loja_anterior": loja_anterior, "loja_nova": loja_nova}
+
+
+@cache_leitura()
+def get_transferencias_vendedor(vendedor_id=None):
+    """Histórico de transferências de loja (mais recente primeiro) — de um vendedor
+    específico, ou de todos se vendedor_id não for informado."""
+    query = """
+        SELECT t.id, t.vendedor_id, v.nome, t.loja_anterior, t.loja_nova, t.data_efetiva, t.criado_em
+        FROM vendedor_transferencias t
+        JOIN vendedores v ON v.id = t.vendedor_id
+        WHERE 1=1
+    """
+    params = {}
+    if vendedor_id:
+        query += " AND t.vendedor_id = :vid"
+        params["vid"] = vendedor_id
+    query += " ORDER BY t.data_efetiva DESC, t.criado_em DESC"
+    return pd.read_sql_query(text(query), get_engine(), params=params)
 
 
 @cache_leitura()
@@ -400,7 +541,8 @@ def get_historico_meta_realizado(loja=None):
                    EXTRACT(YEAR FROM data)::int AS ano,
                    EXTRACT(MONTH FROM data)::int AS mes,
                    SUM(valor_realizado) AS realizado_diario,
-                   SUM(qtd_pedidos) AS pedidos_diario
+                   SUM(qtd_pedidos) AS pedidos_diario,
+                   (ARRAY_AGG(loja ORDER BY data DESC))[1] AS loja
             FROM vendas_diarias
             GROUP BY vendedor_id, EXTRACT(YEAR FROM data), EXTRACT(MONTH FROM data)
         ),
@@ -411,7 +553,8 @@ def get_historico_meta_realizado(loja=None):
                 COALESCE(m.mes, va.mes, rm.mes, cm.mes) AS mes,
                 COALESCE(m.valor_meta, 0) AS valor_meta,
                 COALESCE(va.realizado_diario, 0) + COALESCE(rm.valor_realizado, 0) AS realizado,
-                COALESCE(va.pedidos_diario, 0) + COALESCE(cm.qtd_pedidos, 0) AS pedidos
+                COALESCE(va.pedidos_diario, 0) + COALESCE(cm.qtd_pedidos, 0) AS pedidos,
+                va.loja AS loja_do_mes
             FROM metas m
             FULL OUTER JOIN venda_agg va
               ON m.vendedor_id = va.vendedor_id AND m.ano = va.ano AND m.mes = va.mes
@@ -425,14 +568,14 @@ def get_historico_meta_realizado(loja=None):
              AND COALESCE(m.mes, va.mes, rm.mes) = cm.mes
         )
         SELECT c.ano, c.mes, c.valor_meta, c.realizado, c.pedidos,
-               v.id AS vendedor_id, v.nome, v.loja
+               v.id AS vendedor_id, v.nome, COALESCE(c.loja_do_mes, v.loja) AS loja
         FROM combinado c
         JOIN vendedores v ON v.id = c.vendedor_id
         WHERE 1=1
     """
     params = {}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(c.loja_do_mes, v.loja) = :loja"
         params["loja"] = loja
     query += " ORDER BY c.ano DESC, c.mes DESC, v.nome"
     df = pd.read_sql_query(text(query), get_engine(), params=params)
@@ -530,12 +673,13 @@ def upsert_venda(vendedor_id, data_venda, valor_realizado, qtd_pedidos):
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                """
-                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos)
-                VALUES (:vendedor_id, :data, :valor_realizado, :qtd_pedidos)
+                f"""
+                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos, loja)
+                SELECT :vendedor_id, :data, :valor_realizado, :qtd_pedidos, {LOJA_NA_DATA_SQL}
                 ON CONFLICT (vendedor_id, data)
                 DO UPDATE SET valor_realizado = EXCLUDED.valor_realizado,
-                              qtd_pedidos = EXCLUDED.qtd_pedidos
+                              qtd_pedidos = EXCLUDED.qtd_pedidos,
+                              loja = EXCLUDED.loja
                 """
             ),
             {
@@ -557,11 +701,12 @@ def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                """
-                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos)
-                VALUES (:vendedor_id, :data, :valor_realizado, 0)
+                f"""
+                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos, loja)
+                SELECT :vendedor_id, :data, :valor_realizado, 0, {LOJA_NA_DATA_SQL}
                 ON CONFLICT (vendedor_id, data)
-                DO UPDATE SET valor_realizado = EXCLUDED.valor_realizado
+                DO UPDATE SET valor_realizado = EXCLUDED.valor_realizado,
+                              loja = EXCLUDED.loja
                 """
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "valor_realizado": valor_realizado},
@@ -578,11 +723,12 @@ def upsert_pedidos_dia(vendedor_id, data_venda, qtd_pedidos):
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                """
-                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos)
-                VALUES (:vendedor_id, :data, 0, :qtd_pedidos)
+                f"""
+                INSERT INTO vendas_diarias (vendedor_id, data, valor_realizado, qtd_pedidos, loja)
+                SELECT :vendedor_id, :data, 0, :qtd_pedidos, {LOJA_NA_DATA_SQL}
                 ON CONFLICT (vendedor_id, data)
-                DO UPDATE SET qtd_pedidos = EXCLUDED.qtd_pedidos
+                DO UPDATE SET qtd_pedidos = EXCLUDED.qtd_pedidos,
+                              loja = EXCLUDED.loja
                 """
             ),
             {"vendedor_id": vendedor_id, "data": data_str, "qtd_pedidos": qtd_pedidos},
@@ -603,13 +749,14 @@ def get_vendas_mes(ano, mes, loja=None):
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim = date(ano, mes, ultimo_dia)
     query = """
-        SELECT vd.id, v.id as vendedor_id, v.nome, v.loja, vd.data, vd.valor_realizado, vd.qtd_pedidos
+        SELECT vd.id, v.id as vendedor_id, v.nome, COALESCE(vd.loja, v.loja) AS loja,
+               vd.data, vd.valor_realizado, vd.qtd_pedidos
         FROM vendas_diarias vd JOIN vendedores v ON v.id = vd.vendedor_id
         WHERE vd.data BETWEEN :ini AND :fim
     """
     params = {"ini": ini, "fim": fim}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vd.loja, v.loja) = :loja"
         params["loja"] = loja
     query += " ORDER BY vd.data"
     df = pd.read_sql_query(text(query), get_engine(), params=params)
@@ -641,13 +788,13 @@ def get_vendas_vendedor_mes(vendedor_id, ano, mes):
 @cache_leitura()
 def get_lancamentos_recentes(limite=30, loja=None):
     query = """
-        SELECT vd.id, v.nome, v.loja, vd.data, vd.valor_realizado, vd.qtd_pedidos
+        SELECT vd.id, v.nome, COALESCE(vd.loja, v.loja) AS loja, vd.data, vd.valor_realizado, vd.qtd_pedidos
         FROM vendas_diarias vd JOIN vendedores v ON v.id = vd.vendedor_id
         WHERE 1=1
     """
     params = {"limite": limite}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vd.loja, v.loja) = :loja"
         params["loja"] = loja
     query += " ORDER BY vd.data DESC, vd.id DESC LIMIT :limite"
     return pd.read_sql_query(text(query), get_engine(), params=params)
@@ -1422,15 +1569,22 @@ def upsert_vendas_produtos_dia(vendedor_id, data_venda, produtos):
             {"vid": vendedor_id, "data": data_str},
         )
         if produtos:
+            # Loja é calculada UMA vez (não por linha) — todos os produtos desse
+            # vendedor/dia pertencem à mesma loja, que era efetiva naquela data (ver
+            # LOJA_NA_DATA_SQL/transferir_vendedor_loja).
+            loja_do_dia = conn.execute(
+                text(f"SELECT {LOJA_NA_DATA_SQL}"),
+                {"vendedor_id": vendedor_id, "data": data_str},
+            ).scalar()
             conn.execute(
                 text(
                     """
                     INSERT INTO vendas_produtos_diarias
                         (vendedor_id, data, cod_produto, descricao_produto, marca, fornecedor,
-                         posit, vendas, qtd, qtd_cx, valor_total, pct)
+                         posit, vendas, qtd, qtd_cx, valor_total, pct, loja)
                     VALUES
                         (:vendedor_id, :data, :cod_produto, :descricao_produto, :marca, :fornecedor,
-                         :posit, :vendas, :qtd, :qtd_cx, :valor_total, :pct)
+                         :posit, :vendas, :qtd, :qtd_cx, :valor_total, :pct, :loja)
                     """
                 ),
                 [
@@ -1447,6 +1601,7 @@ def upsert_vendas_produtos_dia(vendedor_id, data_venda, produtos):
                         "qtd_cx": p.get("qtd_cx"),
                         "valor_total": p.get("valor_total") or 0.0,
                         "pct": p.get("pct"),
+                        "loja": loja_do_dia,
                     }
                     for p in produtos
                 ],
@@ -1471,7 +1626,7 @@ def get_produtos_mais_vendidos(ano, mes, loja=None, vendedor_id=None, top_n=15):
     """
     params = {"ini": ini, "fim": fim}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
     if vendedor_id:
         query += " AND vp.vendedor_id = :vendedor_id"
@@ -1500,18 +1655,20 @@ def get_produtos_mais_vendidos_por_vendedor(ano, mes, loja=None, top_n=5):
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim = date(ano, mes, ultimo_dia)
     query = """
-        SELECT vp.vendedor_id, v.nome, v.loja, vp.cod_produto, vp.descricao_produto,
-               vp.marca, vp.fornecedor, SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        SELECT vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja) AS loja, vp.cod_produto,
+               vp.descricao_produto, vp.marca, vp.fornecedor,
+               SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
         FROM vendas_produtos_diarias vp
         JOIN vendedores v ON v.id = vp.vendedor_id
         WHERE vp.data BETWEEN :ini AND :fim AND v.ativo = TRUE
     """
     params = {"ini": ini, "fim": fim}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
     query += (
-        " GROUP BY vp.vendedor_id, v.nome, v.loja, vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor"
+        " GROUP BY vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja), vp.cod_produto, "
+        "vp.descricao_produto, vp.marca, vp.fornecedor"
     )
     df = pd.read_sql_query(text(query), get_engine(), params=params)
     if df.empty:
@@ -1540,7 +1697,7 @@ def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", 
     """
     params = {"ini": ini, "fim": fim}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
     query += f" GROUP BY vp.{agrupar_por} ORDER BY valor_total DESC LIMIT :top_n"
     params["top_n"] = top_n
@@ -1574,7 +1731,7 @@ def get_resumo_produtos_mes(ano, mes, loja=None):
     """
     params = {"ini": ini, "fim": fim}
     if loja and loja != "Ambas":
-        query += " AND v.loja = :loja"
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
     df = pd.read_sql_query(text(query), get_engine(), params=params)
     row = df.iloc[0]

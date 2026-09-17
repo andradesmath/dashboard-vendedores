@@ -301,8 +301,10 @@ with tab_cadastros:
 
             with st.form("form_edit_vendedor"):
                 novo_nome = st.text_input("Nome completo *", value=vendedor_atual["nome"])
-                nova_loja = st.selectbox(
-                    "Loja *", db.LOJAS, index=db.LOJAS.index(vendedor_atual["loja"])
+                st.caption(
+                    f"Loja atual: **{vendedor_atual['loja']}**. Pra mudar de loja, use "
+                    "\"🔄 Transferir vendedor de loja\" logo abaixo — mantém o histórico de "
+                    "vendas correto na loja antiga."
                 )
                 novo_ativo = st.checkbox("Ativo", value=bool(vendedor_atual["ativo"]))
                 col_salvar, col_excluir = st.columns(2)
@@ -313,7 +315,7 @@ with tab_cadastros:
                     if not novo_nome.strip():
                         st.error("O nome completo é obrigatório.")
                     else:
-                        db.update_vendedor(vendedor_id, novo_nome.strip(), nova_loja, novo_ativo)
+                        db.update_vendedor(vendedor_id, novo_nome.strip(), vendedor_atual["loja"], novo_ativo)
                         st.success("Vendedor atualizado com sucesso!")
                         st.session_state.versao_dados += 1
                         st.rerun()
@@ -323,6 +325,73 @@ with tab_cadastros:
                     st.warning(f"Vendedor '{vendedor_atual['nome']}' excluído (metas e vendas associadas também foram removidas).")
                     st.session_state.versao_dados += 1
                     st.rerun()
+
+    st.markdown("---")
+    with st.expander("🔄 Transferir vendedor de loja", expanded=False):
+        st.caption(
+            "Muda a loja de um vendedor a partir de uma data — as vendas ANTERIORES a essa "
+            "data continuam contando pra loja antiga em todos os relatórios (Comparativo "
+            "entre Lojas, rankings, histórico); as vendas dessa data em diante passam a "
+            "contar pra loja nova, mesmo que já estivessem sincronizadas ou sejam "
+            "resincronizadas depois."
+        )
+        if vendedores_df.empty:
+            st.caption("Cadastre um vendedor primeiro.")
+        else:
+            opcoes_transf = {
+                f"{row['nome']} ({row['loja']})": row["id"] for _, row in vendedores_df.iterrows()
+            }
+            escolha_transf = st.selectbox(
+                "Selecione o vendedor", list(opcoes_transf.keys()), key="sel_transferir"
+            )
+            vendedor_id_transf = opcoes_transf[escolha_transf]
+            vendedor_atual_transf = vendedores_df[vendedores_df["id"] == vendedor_id_transf].iloc[0]
+            loja_atual_transf = vendedor_atual_transf["loja"]
+            lojas_destino = [loja for loja in db.LOJAS if loja != loja_atual_transf]
+
+            with st.form("form_transferir_vendedor"):
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    st.text_input("Loja atual", value=loja_atual_transf, disabled=True)
+                with col_t2:
+                    loja_nova_transf = st.selectbox("Nova loja *", lojas_destino)
+                data_efetiva_transf = st.date_input(
+                    "A partir de qual data (inclusive)?", value=date.today(),
+                    max_value=date.today(), key="data_efetiva_transf",
+                )
+                confirmar_transf = st.form_submit_button("🔄 Transferir vendedor")
+
+                if confirmar_transf:
+                    try:
+                        resultado_transf = db.transferir_vendedor_loja(
+                            vendedor_id_transf, loja_nova_transf, data_efetiva_transf
+                        )
+                        st.success(
+                            f"'{resultado_transf['nome']}' transferido(a) de "
+                            f"{resultado_transf['loja_anterior']} para {resultado_transf['loja_nova']} "
+                            f"a partir de {data_efetiva_transf.strftime('%d/%m/%Y')}. O histórico "
+                            "anterior a essa data continua na loja antiga."
+                        )
+                        st.session_state.versao_dados += 1
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+
+            historico_transf = db.get_transferencias_vendedor()
+            if not historico_transf.empty:
+                st.markdown("###### Histórico de transferências")
+                hist_fmt = historico_transf.copy()
+                hist_fmt["data_efetiva"] = pd.to_datetime(hist_fmt["data_efetiva"]).dt.strftime("%d/%m/%Y")
+                st.dataframe(
+                    hist_fmt[["nome", "loja_anterior", "loja_nova", "data_efetiva"]].rename(
+                        columns={
+                            "nome": "Vendedor", "loja_anterior": "De", "loja_nova": "Para",
+                            "data_efetiva": "A partir de",
+                        }
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     st.markdown("---")
     with st.expander("📥 Importar vendedores em lote"):
