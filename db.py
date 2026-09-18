@@ -1917,6 +1917,238 @@ def get_concentracao_portfolio(ano, mes, loja=None, vendedor_id=None):
     }
 
 
+# Faixas de risco de concentração de portfólio (% do faturamento nos top 5 SKUs
+# do vendedor) usadas no diagnóstico comercial comparativo entre vendedores.
+CONCENTRACAO_LIMIAR_ALTA = 60.0
+CONCENTRACAO_LIMIAR_MODERADA = 40.0
+
+
+def classificar_concentracao(top5_pct):
+    """Classifica o risco de concentração de portfólio (% do faturamento nos
+    top 5 SKUs) em Alta/Moderada/Diversificada."""
+    if top5_pct is None or pd.isna(top5_pct):
+        return "— sem dado"
+    if top5_pct >= CONCENTRACAO_LIMIAR_ALTA:
+        return "🔴 Alta"
+    elif top5_pct >= CONCENTRACAO_LIMIAR_MODERADA:
+        return "🟡 Moderada"
+    return "🟢 Diversificada"
+
+
+@cache_leitura()
+def get_comparativo_concentracao_vendedores(ano, mes, loja=None):
+    """Compara TODOS os vendedores ativos do filtro entre si: faturamento em
+    produtos, SKUs/fornecedores/marcas distintos, e a concentração do
+    portfólio (% do faturamento nos top 5 e top 10 SKUs de cada um) — a base
+    do diagnóstico comercial (quem está muito dependente de poucos produtos x
+    quem tem carteira diversificada)."""
+    cols = [
+        "vendedor_id", "nome", "loja", "faturamento_total", "n_produtos",
+        "n_fornecedores", "n_marcas", "top5_pct", "top10_pct", "classificacao",
+    ]
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+    query = """
+        WITH base AS (
+            SELECT vp.vendedor_id, vp.cod_produto, vp.fornecedor, vp.marca,
+                   SUM(vp.valor_total) AS valor_produto
+            FROM vendas_produtos_diarias vp
+            JOIN vendedores v ON v.id = vp.vendedor_id
+            WHERE vp.data BETWEEN :ini AND :fim AND v.ativo = TRUE
+    """
+    params = {"ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query += """
+            GROUP BY vp.vendedor_id, vp.cod_produto, vp.fornecedor, vp.marca
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY vendedor_id ORDER BY valor_produto DESC) AS rn
+            FROM base
+        )
+        SELECT vendedor_id,
+               SUM(valor_produto) AS faturamento_total,
+               COUNT(*) AS n_produtos,
+               COUNT(DISTINCT NULLIF(fornecedor, '')) AS n_fornecedores,
+               COUNT(DISTINCT NULLIF(marca, '')) AS n_marcas,
+               SUM(CASE WHEN rn <= 5 THEN valor_produto ELSE 0 END) AS top5_valor,
+               SUM(CASE WHEN rn <= 10 THEN valor_produto ELSE 0 END) AS top10_valor
+        FROM ranked
+        GROUP BY vendedor_id
+    """
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    vendedores_df = get_vendedores(loja=loja, apenas_ativos=True)[["id", "nome", "loja"]].rename(
+        columns={"id": "vendedor_id"}
+    )
+    df = df.merge(vendedores_df, on="vendedor_id", how="inner")
+
+    df["faturamento_total"] = df["faturamento_total"].astype(float)
+    df["top5_valor"] = df["top5_valor"].astype(float)
+    df["top10_valor"] = df["top10_valor"].astype(float)
+    df["top5_pct"] = df.apply(
+        lambda r: (r["top5_valor"] / r["faturamento_total"] * 100) if r["faturamento_total"] > 0 else None, axis=1
+    )
+    df["top10_pct"] = df.apply(
+        lambda r: (r["top10_valor"] / r["faturamento_total"] * 100) if r["faturamento_total"] > 0 else None, axis=1
+    )
+    df["classificacao"] = df["top5_pct"].apply(classificar_concentracao)
+    df = df.sort_values("faturamento_total", ascending=False).reset_index(drop=True)
+    return df[cols]
+
+
+def get_oportunidades_foco_vendedor(vendedor_id, ano, mes, loja=None, agrupar_por="produto", top_n=10, min_colegas=2):
+    """Identifica onde o vendedor tem a maior OPORTUNIDADE de foco: itens
+    (produto, marca ou fornecedor, conforme `agrupar_por`) que os COLEGAS
+    (outros vendedores ativos do mesmo filtro) vendem bem — com pelo menos
+    `min_colegas` vendedores diferentes vendendo, pra não virar recomendação
+    baseada no resultado de uma pessoa só — mas que ELE vende pouco ou nada,
+    ranqueado pelo tamanho da oportunidade (média dos colegas menos o que ele
+    já vende). Base do diagnóstico/plano de desenvolvimento comercial."""
+    if agrupar_por not in ("produto", "marca", "fornecedor"):
+        raise ValueError("agrupar_por deve ser 'produto', 'marca' ou 'fornecedor'")
+    ini = date(ano, mes, 1)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    fim = date(ano, mes, ultimo_dia)
+
+    if agrupar_por == "produto":
+        select_grupo = "vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor"
+        group_by_grupo = "vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor"
+        cols = ["cod_produto", "descricao_produto", "marca", "fornecedor"]
+    else:
+        select_grupo = f"vp.{agrupar_por} AS grupo"
+        group_by_grupo = f"vp.{agrupar_por}"
+        cols = ["grupo"]
+    cols = cols + ["valor_dele", "valor_colegas", "n_colegas", "media_colegas", "oportunidade"]
+
+    query = f"""
+        SELECT {select_grupo},
+               SUM(CASE WHEN vp.vendedor_id = :vendedor_id THEN vp.valor_total ELSE 0 END) AS valor_dele,
+               SUM(CASE WHEN vp.vendedor_id != :vendedor_id THEN vp.valor_total ELSE 0 END) AS valor_colegas,
+               COUNT(DISTINCT CASE WHEN vp.vendedor_id != :vendedor_id THEN vp.vendedor_id END) AS n_colegas
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim AND v.ativo = TRUE
+    """
+    params = {"vendedor_id": vendedor_id, "ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    if agrupar_por != "produto":
+        query += f" AND vp.{agrupar_por} IS NOT NULL AND vp.{agrupar_por} <> ''"
+    query += f" GROUP BY {group_by_grupo}"
+
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    df["valor_dele"] = df["valor_dele"].astype(float)
+    df["valor_colegas"] = df["valor_colegas"].astype(float)
+    df["n_colegas"] = df["n_colegas"].astype(int)
+    df = df[df["n_colegas"] >= min_colegas].copy()
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["media_colegas"] = df["valor_colegas"] / df["n_colegas"]
+    df["oportunidade"] = df["media_colegas"] - df["valor_dele"]
+    df = df[df["oportunidade"] > 0].sort_values("oportunidade", ascending=False).head(top_n).reset_index(drop=True)
+    return df[cols]
+
+
+def gerar_diagnostico_comercial_vendedor(vendedor_id, ano, mes, loja=None, top_n_oportunidades=5):
+    """Monta uma lista de recomendações textuais de desenvolvimento comercial
+    pro vendedor: risco de concentração de portfólio (com comparação à média
+    dos colegas do filtro) e as maiores oportunidades de foco — produtos e
+    fornecedores que os colegas vendem bem e ele pouco/nada. 100% baseado em
+    regras determinísticas sobre os indicadores já calculados (sem IA), pra
+    não gerar recomendação incoerente com o dado."""
+    comparativo = get_comparativo_concentracao_vendedores(ano, mes, loja=loja)
+    if comparativo.empty:
+        return ["Sem dado de produto suficiente pra gerar diagnóstico neste período."]
+    linha = comparativo[comparativo["vendedor_id"] == vendedor_id]
+    if linha.empty:
+        return ["Sem dado de produto suficiente pra gerar diagnóstico neste período."]
+    r = linha.iloc[0]
+    media_top5 = comparativo["top5_pct"].mean()
+    media_n_produtos = comparativo["n_produtos"].mean()
+
+    recomendacoes = []
+
+    if r["top5_pct"] is not None and not pd.isna(r["top5_pct"]):
+        if r["top5_pct"] >= CONCENTRACAO_LIMIAR_ALTA:
+            recomendacoes.append(
+                f"🔴 Concentração alta: os 5 produtos mais vendidos respondem por "
+                f"{r['top5_pct']:.0f}% do faturamento em produtos — risco de um problema de "
+                f"estoque ou com um fornecedor específico impactar boa parte do resultado. "
+                f"Priorize negociar condições/estoque de segurança com esses fornecedores e "
+                f"trabalhar ativamente pra ampliar o mix ofertado ao cliente."
+            )
+        elif r["top5_pct"] <= CONCENTRACAO_LIMIAR_MODERADA:
+            recomendacoes.append(
+                f"🟢 Portfólio diversificado: os 5 produtos mais vendidos respondem por "
+                f"apenas {r['top5_pct']:.0f}% do faturamento — baixo risco de dependência, "
+                f"manter a estratégia de mix amplo."
+            )
+        else:
+            recomendacoes.append(
+                f"🟡 Concentração moderada: os 5 produtos mais vendidos respondem por "
+                f"{r['top5_pct']:.0f}% do faturamento — dentro do aceitável, mas vale "
+                f"acompanhar pra não subir."
+            )
+        if not pd.isna(media_top5):
+            diff_media = r["top5_pct"] - media_top5
+            if diff_media > 10:
+                recomendacoes.append(
+                    f"Concentração {diff_media:.0f}pp ACIMA da média dos colegas do filtro "
+                    f"({media_top5:.0f}%) — é quem mais depende de poucos produtos no grupo "
+                    f"selecionado."
+                )
+            elif diff_media < -10:
+                recomendacoes.append(
+                    f"Concentração {abs(diff_media):.0f}pp ABAIXO da média dos colegas "
+                    f"({media_top5:.0f}%) — carteira mais pulverizada que a média do grupo."
+                )
+
+    if not pd.isna(media_n_produtos) and media_n_produtos > 0:
+        diff_n = r["n_produtos"] - media_n_produtos
+        if diff_n <= -max(3, media_n_produtos * 0.25):
+            recomendacoes.append(
+                f"Vende só {int(r['n_produtos'])} SKUs distintos, contra uma média de "
+                f"{media_n_produtos:.0f} entre os colegas do filtro — portfólio raso, "
+                f"oportunidade de ampliar o mix ofertado ao cliente."
+            )
+
+    oportunidades_produto = get_oportunidades_foco_vendedor(
+        vendedor_id, ano, mes, loja=loja, agrupar_por="produto", top_n=top_n_oportunidades
+    )
+    if not oportunidades_produto.empty:
+        itens_txt = "; ".join(
+            f"{row['descricao_produto']} (colegas vendem em média {formatar_moeda(row['media_colegas'])}, "
+            f"você {formatar_moeda(row['valor_dele'])})"
+            for _, row in oportunidades_produto.head(3).iterrows()
+        )
+        recomendacoes.append(f"📌 Produtos a focar (maior oportunidade vs. colegas): {itens_txt}.")
+
+    oportunidades_fornecedor = get_oportunidades_foco_vendedor(
+        vendedor_id, ano, mes, loja=loja, agrupar_por="fornecedor", top_n=top_n_oportunidades
+    )
+    if not oportunidades_fornecedor.empty:
+        top_forn = oportunidades_fornecedor.iloc[0]
+        recomendacoes.append(
+            f"📦 Fornecedor com maior oportunidade: {top_forn['grupo']} — colegas vendem em "
+            f"média {formatar_moeda(top_forn['media_colegas'])}, você "
+            f"{formatar_moeda(top_forn['valor_dele'])} (oportunidade estimada de "
+            f"{formatar_moeda(top_forn['oportunidade'])})."
+        )
+
+    if not recomendacoes:
+        recomendacoes.append("Sem sinais de alerta relevantes neste período — indicadores dentro do esperado.")
+    return recomendacoes
+
+
 @cache_leitura()
 def get_produtos_novos_e_parados(ano, mes, loja=None, janela_meses=3):
     """Compara o portfólio vendido no mês com o portfólio vendido na JANELA de meses

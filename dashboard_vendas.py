@@ -2647,6 +2647,62 @@ with tab_dashboard:
             "anterior (nada pra comparar)."
         )
 
+        # ---- Diagnóstico Comercial — Comparativo de Concentração entre Vendedores ----
+        st.markdown("---")
+        st.markdown("##### 📊 Diagnóstico Comercial — Concentração de Portfólio por Vendedor")
+        st.caption(
+            "Compara todos os vendedores ativos do filtro entre si: quanto do faturamento em "
+            "produtos de cada um está concentrado nos 5/10 SKUs mais vendidos. Quanto maior a "
+            "concentração, maior o risco de depender de poucos produtos (ruptura de estoque, "
+            "negociação com um único fornecedor, etc.) — e maior a oportunidade de trabalhar "
+            "ampliação de mix com esse vendedor."
+        )
+        comparativo_concentracao = db.get_comparativo_concentracao_vendedores(ano_filtro, mes_filtro, loja=loja_filtro)
+        if comparativo_concentracao.empty:
+            st.info("Sem dado de produto suficiente para montar o comparativo neste período.")
+        else:
+            fig_concentracao = go.Figure(go.Bar(
+                x=comparativo_concentracao["top5_pct"],
+                y=comparativo_concentracao["nome"],
+                orientation="h",
+                marker_color=[
+                    "#c0392b" if c.startswith("🔴") else ("#f39c12" if c.startswith("🟡") else "#1e8449")
+                    for c in comparativo_concentracao["classificacao"]
+                ],
+                text=comparativo_concentracao["classificacao"],
+                textposition="outside",
+            ))
+            media_top5_geral = float(comparativo_concentracao["top5_pct"].mean())
+            fig_concentracao.add_vline(x=media_top5_geral, line_dash="dash", line_color="#888888")
+            fig_concentracao.update_layout(
+                margin=dict(l=10, r=60, t=20, b=10),
+                height=max(220, 32 * len(comparativo_concentracao)),
+                xaxis=dict(title="% do faturamento nos top 5 SKUs"),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig_concentracao, use_container_width=True)
+            st.caption(
+                f"Linha pontilhada = média do grupo no filtro atual ({media_top5_geral:.0f}%). "
+                f"🔴 Alta = ≥{db.CONCENTRACAO_LIMIAR_ALTA:.0f}%. 🟡 Moderada = entre "
+                f"{db.CONCENTRACAO_LIMIAR_MODERADA:.0f}% e {db.CONCENTRACAO_LIMIAR_ALTA:.0f}%. "
+                f"🟢 Diversificada = <{db.CONCENTRACAO_LIMIAR_MODERADA:.0f}%."
+            )
+            with st.expander("Ver tabela completa do comparativo", expanded=False):
+                comp_conc_fmt = comparativo_concentracao.copy()
+                comp_conc_fmt["Faturamento"] = comp_conc_fmt["faturamento_total"].apply(db.formatar_moeda)
+                comp_conc_fmt["Top 5"] = comp_conc_fmt["top5_pct"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "—")
+                comp_conc_fmt["Top 10"] = comp_conc_fmt["top10_pct"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "—")
+                st.dataframe(
+                    comp_conc_fmt[[
+                        "nome", "loja", "Faturamento", "n_produtos", "n_fornecedores", "n_marcas",
+                        "Top 5", "Top 10", "classificacao",
+                    ]].rename(columns={
+                        "nome": "Vendedor", "loja": "Loja", "n_produtos": "SKUs",
+                        "n_fornecedores": "Fornec.", "n_marcas": "Marcas", "classificacao": "Risco",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
         # ---- Mix de Produtos — por Vendedor / por Loja ----
         st.markdown("---")
         st.markdown("##### 🧬 Mix de Vendas Completo — por Vendedor ou por Loja")
@@ -2829,6 +2885,65 @@ with tab_dashboard:
                         "MoM = variação vs o mês anterior. YoY = variação vs o mesmo mês do ano "
                         "anterior. Sem % quando o produto não vendeu no período de comparação "
                         "(nada pra comparar)."
+                    )
+
+                if vendedor_id_mix:
+                    st.write(f"**💡 Diagnóstico Comercial — Indicativos de Desenvolvimento ({rotulo_escopo_mix})**")
+                    st.caption(
+                        "Comparação automática com os colegas ativos do filtro atual (mesma loja "
+                        "selecionada no topo do painel) — concentração de portfólio vs. a média do "
+                        "grupo, e os produtos/fornecedores que os colegas vendem bem e este vendedor "
+                        "vende pouco ou nada (oportunidade = média dos colegas − o que ele já vende)."
+                    )
+                    diagnostico_mix = db.gerar_diagnostico_comercial_vendedor(
+                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro
+                    )
+                    for rec in diagnostico_mix:
+                        st.info(rec)
+
+                    oport_produto_mix = db.get_oportunidades_foco_vendedor(
+                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
+                        agrupar_por="produto", top_n=10,
+                    )
+                    oport_forn_mix = db.get_oportunidades_foco_vendedor(
+                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
+                        agrupar_por="fornecedor", top_n=10,
+                    )
+                    ocol1, ocol2 = st.columns(2)
+                    with ocol1:
+                        st.write("**Produtos com maior oportunidade**")
+                        if oport_produto_mix.empty:
+                            st.caption("Sem oportunidade relevante identificada (precisa de pelo menos 2 colegas vendendo o item).")
+                        else:
+                            oport_prod_fmt = oport_produto_mix.copy()
+                            oport_prod_fmt["Você"] = oport_prod_fmt["valor_dele"].apply(db.formatar_moeda)
+                            oport_prod_fmt["Média Colegas"] = oport_prod_fmt["media_colegas"].apply(db.formatar_moeda)
+                            oport_prod_fmt["Oportunidade"] = oport_prod_fmt["oportunidade"].apply(db.formatar_moeda)
+                            st.dataframe(
+                                oport_prod_fmt[["descricao_produto", "Você", "Média Colegas", "Oportunidade"]].rename(
+                                    columns={"descricao_produto": "Produto"}
+                                ),
+                                use_container_width=True, hide_index=True,
+                            )
+                    with ocol2:
+                        st.write("**Fornecedores com maior oportunidade**")
+                        if oport_forn_mix.empty:
+                            st.caption("Sem oportunidade relevante identificada (precisa de pelo menos 2 colegas vendendo do fornecedor).")
+                        else:
+                            oport_forn_fmt = oport_forn_mix.copy()
+                            oport_forn_fmt["Você"] = oport_forn_fmt["valor_dele"].apply(db.formatar_moeda)
+                            oport_forn_fmt["Média Colegas"] = oport_forn_fmt["media_colegas"].apply(db.formatar_moeda)
+                            oport_forn_fmt["Oportunidade"] = oport_forn_fmt["oportunidade"].apply(db.formatar_moeda)
+                            st.dataframe(
+                                oport_forn_fmt[["grupo", "Você", "Média Colegas", "Oportunidade"]].rename(
+                                    columns={"grupo": "Fornecedor"}
+                                ),
+                                use_container_width=True, hide_index=True,
+                            )
+                    st.caption(
+                        "Oportunidade = média de faturamento dos colegas nesse item − o que este "
+                        "vendedor já vende dele. Só considera itens vendidos por pelo menos 2 outros "
+                        "vendedores (evita recomendação baseada no resultado de uma pessoa só)."
                     )
 
                 st.write("**Exportar esse recorte em PDF**")
