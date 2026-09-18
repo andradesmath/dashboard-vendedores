@@ -1917,6 +1917,32 @@ def get_concentracao_portfolio(ano, mes, loja=None, vendedor_id=None):
     }
 
 
+def _com_retry_deadlock(fn, tentativas=3, espera_s=0.5):
+    """Executa `fn` (callable sem argumentos) e tenta de novo se o Postgres detectar
+    um DEADLOCK TRANSITÓRIO — ex.: uma leitura que faz JOIN entre vendedores e
+    vendas_produtos_diarias cruzando, por coincidência de timing, com a migração de
+    schema do init_db() rodando em OUTRO processo (o painel acordando de "sleep" e o
+    job de sincronização do GitHub Actions batendo no banco ao mesmo tempo — o mesmo
+    cenário que o pg_advisory_xact_lock em init_db() já mitiga entre duas migrações,
+    mas não entre uma migração e uma leitura comum). Um deadlock no Postgres sempre
+    aborta UMA das duas transações envolvidas (a "vítima") — tentar de novo quase
+    sempre resolve na hora, sem precisar de nenhuma ação do usuário."""
+    import time
+    from pandas.errors import DatabaseError
+
+    ultimo_erro = None
+    for tentativa in range(tentativas):
+        try:
+            return fn()
+        except DatabaseError as e:
+            if "deadlock detected" in str(e).lower() and tentativa < tentativas - 1:
+                ultimo_erro = e
+                time.sleep(espera_s * (tentativa + 1))
+                continue
+            raise
+    raise ultimo_erro
+
+
 # Faixas de risco de concentração de portfólio (% do faturamento nos top 5 SKUs
 # do vendedor) usadas no diagnóstico comercial comparativo entre vendedores.
 CONCENTRACAO_LIMIAR_ALTA = 60.0
@@ -1978,7 +2004,7 @@ def get_comparativo_concentracao_vendedores(ano, mes, loja=None):
         FROM ranked
         GROUP BY vendedor_id
     """
-    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    df = _com_retry_deadlock(lambda: pd.read_sql_query(text(query), get_engine(), params=params))
     if df.empty:
         return pd.DataFrame(columns=cols)
 
@@ -2042,7 +2068,7 @@ def get_oportunidades_foco_vendedor(vendedor_id, ano, mes, loja=None, agrupar_po
         query += f" AND vp.{agrupar_por} IS NOT NULL AND vp.{agrupar_por} <> ''"
     query += f" GROUP BY {group_by_grupo}"
 
-    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    df = _com_retry_deadlock(lambda: pd.read_sql_query(text(query), get_engine(), params=params))
     if df.empty:
         return pd.DataFrame(columns=cols)
 
