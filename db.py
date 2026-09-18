@@ -1811,6 +1811,271 @@ def get_comparativo_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedo
     return atual
 
 
+@cache_leitura()
+def get_comparativo_produtos(ano, mes, loja=None, vendedor_id=None, top_n=15):
+    """Top produtos do mês (ver get_produtos_mais_vendidos) com o faturamento do
+    mesmo produto no mês anterior ao lado e o % de crescimento — mesmo padrão do
+    comparativo por marca/fornecedor, agora no nível de produto individual."""
+    ano_ant, mes_ant = mes_anterior(ano, mes)
+    atual = get_produtos_mais_vendidos(ano, mes, loja=loja, vendedor_id=vendedor_id, top_n=top_n)
+    cols = list(atual.columns) + ["valor_total_anterior", "crescimento_pct"]
+    if atual.empty:
+        return pd.DataFrame(columns=cols)
+
+    anterior = get_produtos_mais_vendidos(
+        ano_ant, mes_ant, loja=loja, vendedor_id=vendedor_id, top_n=100000
+    )
+    anterior_lookup = anterior.set_index("cod_produto")["valor_total"].to_dict() if not anterior.empty else {}
+
+    atual = atual.copy()
+    atual["valor_total_anterior"] = atual["cod_produto"].map(anterior_lookup).fillna(0.0)
+    atual["crescimento_pct"] = atual.apply(
+        lambda r: (
+            (r["valor_total"] - r["valor_total_anterior"]) / r["valor_total_anterior"] * 100
+        ) if r["valor_total_anterior"] > 0 else None,
+        axis=1,
+    )
+    return atual
+
+
+def get_concentracao_portfolio(ano, mes, loja=None):
+    """Quanto do faturamento em produtos do mês está concentrado nos top 5/10 SKUs —
+    quanto maior, mais dependente o negócio fica de poucos produtos (risco de
+    ruptura de estoque ou de um fornecedor específico)."""
+    df = get_produtos_mais_vendidos(ano, mes, loja=loja, top_n=100000)
+    if df.empty:
+        return {"top5_pct": None, "top10_pct": None, "faturamento_total": 0.0, "n_produtos": 0}
+    df = df.sort_values("valor_total", ascending=False)
+    total = float(df["valor_total"].sum())
+    if total <= 0:
+        return {"top5_pct": None, "top10_pct": None, "faturamento_total": 0.0, "n_produtos": len(df)}
+    top5 = float(df.head(5)["valor_total"].sum())
+    top10 = float(df.head(10)["valor_total"].sum())
+    return {
+        "top5_pct": top5 / total * 100,
+        "top10_pct": top10 / total * 100,
+        "faturamento_total": total,
+        "n_produtos": len(df),
+    }
+
+
+@cache_leitura()
+def get_produtos_novos_e_parados(ano, mes, loja=None, janela_meses=3):
+    """Compara o portfólio vendido no mês com o portfólio vendido na JANELA de meses
+    anterior (padrão 3 meses antes do mês selecionado, sem contar o próprio mês):
+      novos   — produtos vendidos ESTE mês que não vendiam nem uma vez nesses
+                últimos `janela_meses` meses (portfólio genuinamente novo, não só
+                "pulou o mês passado");
+      parados — produtos que vendiam nessa janela mas não venderam nada este mês
+                (candidatos a revisão de estoque/mix — "sumiram")."""
+    ini_mes = date(ano, mes, 1)
+    fim_mes = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    ano_jfim, mes_jfim = mes_anterior(ano, mes)
+    fim_janela = date(ano_jfim, mes_jfim, calendar.monthrange(ano_jfim, mes_jfim)[1])
+    ano_jini, mes_jini = ano_jfim, mes_jfim
+    for _ in range(janela_meses - 1):
+        ano_jini, mes_jini = mes_anterior(ano_jini, mes_jini)
+    ini_janela = date(ano_jini, mes_jini, 1)
+
+    params = {"ini_mes": ini_mes, "fim_mes": fim_mes, "ini_janela": ini_janela, "fim_janela": fim_janela}
+    filtro_loja = ""
+    if loja and loja != "Ambas":
+        filtro_loja = " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+
+    query = f"""
+        WITH janela AS (
+            SELECT DISTINCT vp.cod_produto
+            FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+            WHERE vp.data BETWEEN :ini_janela AND :fim_janela{filtro_loja}
+        ),
+        mes_atual AS (
+            SELECT vp.cod_produto, MAX(vp.descricao_produto) AS descricao_produto,
+                   MAX(vp.marca) AS marca, MAX(vp.fornecedor) AS fornecedor,
+                   SUM(vp.valor_total) AS valor_total
+            FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+            WHERE vp.data BETWEEN :ini_mes AND :fim_mes{filtro_loja}
+            GROUP BY vp.cod_produto
+        ),
+        historico_janela AS (
+            SELECT vp.cod_produto, MAX(vp.descricao_produto) AS descricao_produto,
+                   MAX(vp.marca) AS marca, MAX(vp.fornecedor) AS fornecedor,
+                   SUM(vp.valor_total) AS valor_total_janela, MAX(vp.data) AS ultima_venda
+            FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+            WHERE vp.data BETWEEN :ini_janela AND :fim_janela{filtro_loja}
+            GROUP BY vp.cod_produto
+        )
+        SELECT 'novo' AS tipo, m.cod_produto, m.descricao_produto, m.marca, m.fornecedor,
+               m.valor_total, NULL::date AS ultima_venda
+        FROM mes_atual m
+        WHERE m.cod_produto NOT IN (SELECT cod_produto FROM janela)
+        UNION ALL
+        SELECT 'parado' AS tipo, h.cod_produto, h.descricao_produto, h.marca, h.fornecedor,
+               h.valor_total_janela AS valor_total, h.ultima_venda
+        FROM historico_janela h
+        WHERE h.cod_produto NOT IN (SELECT cod_produto FROM mes_atual)
+        ORDER BY valor_total DESC
+    """
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    cols = ["cod_produto", "descricao_produto", "marca", "fornecedor", "valor_total", "ultima_venda"]
+    if df.empty:
+        return {"novos": pd.DataFrame(columns=cols), "parados": pd.DataFrame(columns=cols)}
+    df["valor_total"] = df["valor_total"].astype(float)
+    novos = df[df["tipo"] == "novo"][cols].reset_index(drop=True)
+    parados = df[df["tipo"] == "parado"][cols].reset_index(drop=True)
+    if not parados.empty:
+        parados["ultima_venda"] = pd.to_datetime(parados["ultima_venda"]).dt.date
+        parados["dias_parado"] = parados["ultima_venda"].apply(lambda d: (fim_mes - d).days)
+    return {"novos": novos, "parados": parados}
+
+
+@cache_leitura()
+def buscar_produtos(termo, loja=None, limite=30):
+    """Busca produtos já vendidos (código OU descrição, case-insensitive) pra
+    alimentar um seletor de busca no drill-down de produto individual."""
+    if not termo or not termo.strip():
+        return pd.DataFrame(columns=["cod_produto", "descricao_produto"])
+    query = """
+        SELECT DISTINCT vp.cod_produto, vp.descricao_produto
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE (vp.cod_produto ILIKE :termo OR vp.descricao_produto ILIKE :termo)
+    """
+    params = {"termo": f"%{termo.strip()}%"}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query += " ORDER BY vp.descricao_produto LIMIT :limite"
+    params["limite"] = limite
+    return pd.read_sql_query(text(query), get_engine(), params=params)
+
+
+@cache_leitura()
+def get_serie_produto(cod_produto, loja=None, meses=12):
+    """Série MENSAL (valor_total, qtd_total) de UM produto específico, últimos
+    `meses` meses até o mês corrente — base do gráfico de tendência no drill-down."""
+    hoje = date.today()
+    ano_ini, mes_ini = hoje.year, hoje.month
+    for _ in range(meses - 1):
+        ano_ini, mes_ini = mes_anterior(ano_ini, mes_ini)
+    ini = date(ano_ini, mes_ini, 1)
+
+    query = """
+        SELECT EXTRACT(YEAR FROM vp.data)::int AS ano, EXTRACT(MONTH FROM vp.data)::int AS mes,
+               SUM(vp.valor_total) AS valor_total, SUM(vp.qtd) AS qtd_total
+        FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.cod_produto = :cod_produto AND vp.data >= :ini
+    """
+    params = {"cod_produto": cod_produto, "ini": ini}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query += " GROUP BY 1, 2 ORDER BY 1, 2"
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_total"] = df["valor_total"].astype(float)
+        df["qtd_total"] = df["qtd_total"].astype(float)
+    return df
+
+
+@cache_leitura()
+def get_vendedores_por_produto(cod_produto, ano, mes, loja=None):
+    """Quem vendeu um produto específico no mês, ranqueado por valor — pra saber
+    se um produto é força de um vendedor só ou está bem distribuído."""
+    ini = date(ano, mes, 1)
+    fim = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    query = """
+        SELECT vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja) AS loja,
+               SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.cod_produto = :cod_produto AND vp.data BETWEEN :ini AND :fim
+    """
+    params = {"cod_produto": cod_produto, "ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query += """
+        GROUP BY vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja)
+        ORDER BY valor_total DESC
+    """
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["qtd_total"] = df["qtd_total"].astype(float)
+        df["valor_total"] = df["valor_total"].astype(float)
+    return df
+
+
+@cache_leitura()
+def get_serie_mensal_produtos(loja=None, meses=12):
+    """Série MENSAL do faturamento total em Vendas por Produto (todos os SKUs
+    somados), últimos `meses` meses — base do gráfico de tendência/projeção do
+    portfólio inteiro, usando a série histórica já importada (backfill + sync)."""
+    hoje = date.today()
+    ano_ini, mes_ini = hoje.year, hoje.month
+    for _ in range(meses - 1):
+        ano_ini, mes_ini = mes_anterior(ano_ini, mes_ini)
+    ini = date(ano_ini, mes_ini, 1)
+
+    query = """
+        SELECT EXTRACT(YEAR FROM vp.data)::int AS ano, EXTRACT(MONTH FROM vp.data)::int AS mes,
+               SUM(vp.valor_total) AS valor_total, SUM(vp.qtd) AS qtd_total,
+               COUNT(DISTINCT vp.cod_produto) AS n_produtos
+        FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data >= :ini
+    """
+    params = {"ini": ini}
+    if loja and loja != "Ambas":
+        query += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query += " GROUP BY 1, 2 ORDER BY 1, 2"
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_total"] = df["valor_total"].astype(float)
+        df["qtd_total"] = df["qtd_total"].astype(float)
+    return df
+
+
+@cache_leitura()
+def get_serie_mensal_grupo(loja=None, agrupar_por="fornecedor", meses=6, top_n=8):
+    """Série MENSAL de faturamento dos top N fornecedores/marcas (ranqueados pelo
+    total acumulado na própria janela), últimos `meses` meses — base das mini-
+    tendências no ranking por fornecedor/marca (regressão linear igual à usada no
+    Score de Performance do vendedor)."""
+    if agrupar_por not in ("marca", "fornecedor"):
+        raise ValueError("agrupar_por deve ser 'marca' ou 'fornecedor'")
+    hoje = date.today()
+    ano_ini, mes_ini = hoje.year, hoje.month
+    for _ in range(meses - 1):
+        ano_ini, mes_ini = mes_anterior(ano_ini, mes_ini)
+    ini = date(ano_ini, mes_ini, 1)
+
+    params = {"ini": ini, "top_n": top_n}
+    filtro_loja = ""
+    if loja and loja != "Ambas":
+        filtro_loja = " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+
+    query = f"""
+        WITH totais AS (
+            SELECT vp.{agrupar_por} AS grupo, SUM(vp.valor_total) AS total
+            FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+            WHERE vp.data >= :ini AND vp.{agrupar_por} IS NOT NULL AND vp.{agrupar_por} <> ''{filtro_loja}
+            GROUP BY 1 ORDER BY total DESC LIMIT :top_n
+        )
+        SELECT vp.{agrupar_por} AS grupo, EXTRACT(YEAR FROM vp.data)::int AS ano,
+               EXTRACT(MONTH FROM vp.data)::int AS mes, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        JOIN totais t ON t.grupo = vp.{agrupar_por}
+        WHERE vp.data >= :ini{filtro_loja}
+        GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+    """
+    df = pd.read_sql_query(text(query), get_engine(), params=params)
+    if not df.empty:
+        df["valor_total"] = df["valor_total"].astype(float)
+    return df
+
+
 # --------------------------------------------------------------------------
 # Regras de negócio / KPIs
 # --------------------------------------------------------------------------
