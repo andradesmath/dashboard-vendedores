@@ -1944,6 +1944,25 @@ def _com_retry_deadlock(fn, tentativas=3, espera_s=0.5):
     raise ultimo_erro
 
 
+# O deadlock transitório do Postgres (ver docstring de _com_retry_deadlock acima)
+# pode acontecer em QUALQUER leitura do painel que cruze tabelas com a migração
+# de schema do init_db() — não só nas duas consultas mais pesadas que já tinham
+# o retry manual. Em vez de repetir `_com_retry_deadlock(lambda: ...)` em cada uma
+# das dezenas de chamadas a pd.read_sql_query espalhadas neste arquivo (frágil:
+# uma nova função que algum dia for colada aqui, inclusive por edição direta no
+# GitHub, ficaria desprotegida por esquecimento), o retry é aplicado UMA VEZ,
+# globalmente, substituindo a própria pd.read_sql_query por uma versão com retry.
+# Isso cobre automaticamente toda leitura feita através deste módulo.
+_pd_read_sql_query_original = pd.read_sql_query
+
+
+def _read_sql_query_com_retry(*args, **kwargs):
+    return _com_retry_deadlock(lambda: _pd_read_sql_query_original(*args, **kwargs))
+
+
+pd.read_sql_query = _read_sql_query_com_retry
+
+
 # Faixas de risco de concentração de portfólio (% do faturamento nos top 5 SKUs
 # do vendedor) usadas no diagnóstico comercial comparativo entre vendedores.
 CONCENTRACAO_LIMIAR_ALTA = 60.0
