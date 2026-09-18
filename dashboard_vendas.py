@@ -2669,7 +2669,7 @@ with tab_dashboard:
                 st.info("Nenhum vendedor ativo no filtro selecionado.")
             else:
                 opcoes_mix_vend = {
-                    f"{r['nome']} ({r['loja']})": r["id"] for _, r in vendedores_ativos_mix.iterrows()
+                    f"{r['nome']} ({r['loja']})": int(r["id"]) for _, r in vendedores_ativos_mix.iterrows()
                 }
                 escolha_mix_vend = st.selectbox(
                     "Vendedor", list(opcoes_mix_vend.keys()), key="sel_mix_vendedor"
