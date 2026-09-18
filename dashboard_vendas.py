@@ -3010,4 +3010,4 @@ with tab_dashboard:
             st.download_button(
                 "⬇️ Baixar PDFs de todos os vendedores (.zip)", data=zip_bytes, file_name=nome_zip,
                 mime="application/zip",
-            )git
+            )
