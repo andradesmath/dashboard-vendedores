@@ -2657,7 +2657,12 @@ with tab_dashboard:
             "negociação com um único fornecedor, etc.) — e maior a oportunidade de trabalhar "
             "ampliação de mix com esse vendedor."
         )
-        comparativo_concentracao = db.get_comparativo_concentracao_vendedores(ano_filtro, mes_filtro, loja=loja_filtro)
+        try:
+            comparativo_concentracao = db.get_comparativo_concentracao_vendedores(ano_filtro, mes_filtro, loja=loja_filtro)
+        except Exception as e_diag_comercial:
+            st.error("Erro ao montar o comparativo de concentração — detalhe técnico abaixo:")
+            st.exception(e_diag_comercial)
+            comparativo_concentracao = pd.DataFrame()
         if comparativo_concentracao.empty:
             st.info("Sem dado de produto suficiente para montar o comparativo neste período.")
         else:
@@ -2895,20 +2900,27 @@ with tab_dashboard:
                         "grupo, e os produtos/fornecedores que os colegas vendem bem e este vendedor "
                         "vende pouco ou nada (oportunidade = média dos colegas − o que ele já vende)."
                     )
-                    diagnostico_mix = db.gerar_diagnostico_comercial_vendedor(
-                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro
-                    )
+                    try:
+                        diagnostico_mix = db.gerar_diagnostico_comercial_vendedor(
+                            vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro
+                        )
+                        oport_produto_mix = db.get_oportunidades_foco_vendedor(
+                            vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
+                            agrupar_por="produto", top_n=10,
+                        )
+                        oport_forn_mix = db.get_oportunidades_foco_vendedor(
+                            vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
+                            agrupar_por="fornecedor", top_n=10,
+                        )
+                    except Exception as e_diag_vend:
+                        st.error("Erro ao montar o diagnóstico comercial — detalhe técnico abaixo:")
+                        st.exception(e_diag_vend)
+                        diagnostico_mix = []
+                        oport_produto_mix = pd.DataFrame()
+                        oport_forn_mix = pd.DataFrame()
+
                     for rec in diagnostico_mix:
                         st.info(rec)
-
-                    oport_produto_mix = db.get_oportunidades_foco_vendedor(
-                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
-                        agrupar_por="produto", top_n=10,
-                    )
-                    oport_forn_mix = db.get_oportunidades_foco_vendedor(
-                        vendedor_id_mix, ano_filtro, mes_filtro, loja=loja_filtro,
-                        agrupar_por="fornecedor", top_n=10,
-                    )
                     ocol1, ocol2 = st.columns(2)
                     with ocol1:
                         st.write("**Produtos com maior oportunidade**")
