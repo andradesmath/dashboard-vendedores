@@ -13,6 +13,7 @@ import io
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -22,6 +23,8 @@ from reportlab.platypus import (
 )
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.charts.legends import Legend
 
 import db
 
@@ -476,3 +479,295 @@ def gerar_zip_vendedores(vendedores_df, ano, mes, dias_uteis_total=None):
             zf.writestr(nome_arquivo, pdf_bytes)
     buffer_zip.seek(0)
     return buffer_zip.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Relatório de Mix de Produtos (por vendedor ou por loja)
+# ---------------------------------------------------------------------------
+
+_PALETA_PIZZA = [
+    colors.HexColor("#1a5276"), colors.HexColor("#2e86c1"), colors.HexColor("#1e8449"),
+    colors.HexColor("#f39c12"), colors.HexColor("#c0392b"), colors.HexColor("#8e44ad"),
+    colors.HexColor("#16a085"), colors.HexColor("#7f8c8d"),
+]
+
+
+def _grafico_pizza_mix(mix_df, top_n=7):
+    """Gráfico de pizza com a composição de um mix (marca ou fornecedor),
+    agrupando o restante como 'Outros' além do top_n, com legenda em %."""
+    df = mix_df.sort_values("valor_total", ascending=False).reset_index(drop=True)
+    if len(df) > top_n:
+        principais = df.head(top_n)
+        outros_valor = float(df.iloc[top_n:]["valor_total"].sum())
+        rotulos = principais["grupo"].tolist() + ["Outros"]
+        valores = [float(v) for v in principais["valor_total"].tolist()] + [outros_valor]
+    else:
+        rotulos = df["grupo"].tolist()
+        valores = [float(v) for v in df["valor_total"].tolist()]
+
+    drawing = Drawing(460, 160)
+    pie = Pie()
+    pie.x = 20
+    pie.y = 10
+    pie.width = 140
+    pie.height = 140
+    pie.data = valores
+    pie.labels = None
+    pie.sideLabels = False
+    pie.slices.strokeWidth = 0.5
+    pie.slices.strokeColor = colors.white
+    for i in range(len(valores)):
+        pie.slices[i].fillColor = _PALETA_PIZZA[i % len(_PALETA_PIZZA)]
+    drawing.add(pie)
+
+    total = sum(valores) or 1
+    legend = Legend()
+    legend.x = 190
+    legend.y = 140
+    legend.dx = 8
+    legend.dy = 8
+    legend.fontName = "Helvetica"
+    legend.fontSize = 8
+    legend.alignment = "left"
+    legend.columnMaximum = 8
+    legend.colorNamePairs = [
+        (_PALETA_PIZZA[i % len(_PALETA_PIZZA)], f"{str(rotulos[i])[:26]} ({valores[i] / total * 100:.1f}%)")
+        for i in range(len(valores))
+    ]
+    drawing.add(legend)
+    return drawing
+
+
+def _grafico_serie_mensal_produtos(serie_df):
+    """Gráfico de barras com a série MENSAL de faturamento em produtos (últimos meses)."""
+    drawing = Drawing(440, 170)
+    chart = VerticalBarChart()
+    chart.x = 40
+    chart.y = 25
+    chart.height = 120
+    chart.width = 380
+    valores = [float(v) for v in serie_df["valor_total"].tolist()]
+    rotulos = [f"{int(r['mes']):02d}/{str(int(r['ano']))[2:]}" for _, r in serie_df.iterrows()]
+    chart.data = [valores]
+    chart.categoryAxis.categoryNames = rotulos
+    chart.categoryAxis.labels.fontSize = 7
+    chart.valueAxis.valueMin = 0
+    chart.bars[0].fillColor = AZUL
+    chart.barWidth = 10
+    drawing.add(chart)
+    return drawing
+
+
+def _fmt_pct_pdf(v):
+    if v is None or pd.isna(v):
+        return "—"
+    sinal = "+" if v >= 0 else ""
+    return f"{sinal}{v:.1f}%"
+
+
+def gerar_pdf_mix_produtos(ano, mes, loja=None, vendedor_id=None, rotulo_escopo=None):
+    """Gera o PDF de Mix de Produtos — curva ABC, mix completo por marca/fornecedor
+    (com gráficos de pizza), concentração, consistência, tendência de 6 meses e
+    comparativo de produtos MoM/YoY — de UM vendedor específico ou de UMA loja.
+    Retorna os bytes do PDF."""
+    rotulo_escopo = rotulo_escopo or (loja or "Geral")
+
+    resumo = db.get_resumo_produtos_mes(ano, mes, loja=loja, vendedor_id=vendedor_id)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, topMargin=1.6 * cm, bottomMargin=1.6 * cm,
+        leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+    )
+    styles = getSampleStyleSheet()
+    titulo_style = ParagraphStyle("titulo", parent=styles["Heading1"], textColor=AZUL, spaceAfter=2)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], textColor=CINZA)
+    secao_style = ParagraphStyle("secao", parent=styles["Heading3"], textColor=AZUL, spaceBefore=10)
+
+    elementos = []
+    elementos.append(Paragraph("Relatório de Mix de Produtos", titulo_style))
+    elementos.append(Paragraph(str(rotulo_escopo), styles["Heading2"]))
+    elementos.append(Paragraph(f"Período de referência: {db.MESES_PT[mes]}/{ano}", sub_style))
+    elementos.append(Spacer(1, 0.4 * cm))
+    elementos.append(HRFlowable(width="100%", color=AZUL, thickness=1.2))
+    elementos.append(Spacer(1, 0.5 * cm))
+
+    if resumo["n_produtos"] == 0:
+        elementos.append(Paragraph(
+            "Nenhuma venda por produto lançada para este recorte no período.", styles["Normal"]
+        ))
+        doc.build(elementos)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    concentracao = db.get_concentracao_portfolio(ano, mes, loja=loja, vendedor_id=vendedor_id)
+    curva_abc = db.get_curva_abc_produtos(ano, mes, loja=loja, vendedor_id=vendedor_id)
+    mix_forn = db.get_mix_marca_fornecedor(ano, mes, loja=loja, vendedor_id=vendedor_id, agrupar_por="fornecedor")
+    mix_marca = db.get_mix_marca_fornecedor(ano, mes, loja=loja, vendedor_id=vendedor_id, agrupar_por="marca")
+    comparativo = db.get_comparativo_produtos(ano, mes, loja=loja, vendedor_id=vendedor_id, top_n=20)
+    serie_mensal = db.get_serie_mensal_produtos(loja=loja, vendedor_id=vendedor_id, meses=6)
+
+    cv_mix = None
+    if len(serie_mensal) >= 3:
+        media_serie = float(serie_mensal["valor_total"].mean())
+        desvio_serie = float(serie_mensal["valor_total"].std(ddof=0))
+        cv_mix = (desvio_serie / media_serie * 100) if media_serie > 0 else None
+
+    dados_kpi = [
+        ["Indicador", "Valor"],
+        ["Faturamento em produtos", db.formatar_moeda(resumo["faturamento_total"])],
+        ["Itens vendidos", f"{resumo['qtd_total']:,.0f}".replace(",", ".")],
+        ["Ticket médio por item", db.formatar_moeda(resumo["ticket_medio_item"])],
+        ["SKUs distintos", str(resumo["n_produtos"])],
+        ["Fornecedores / marcas distintos", f"{resumo['n_fornecedores']} / {resumo['n_marcas']}"],
+        ["Concentração Top 5 SKUs", f"{concentracao['top5_pct']:.1f}%" if concentracao["top5_pct"] is not None else "—"],
+        ["Concentração Top 10 SKUs", f"{concentracao['top10_pct']:.1f}%" if concentracao["top10_pct"] is not None else "—"],
+        ["Consistência mensal (CV, 6m)", f"{cv_mix:.0f}%" if cv_mix is not None else "—"],
+    ]
+    tabela_kpi = Table(dados_kpi, colWidths=[9 * cm, 7 * cm])
+    tabela_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elementos.append(tabela_kpi)
+    elementos.append(Spacer(1, 0.15 * cm))
+    elementos.append(Paragraph(
+        "Consistência (CV) = coeficiente de variação do faturamento mensal em produtos dos "
+        "últimos 6 meses (desvio padrão ÷ média). Quanto menor, mais regular o volume mês a mês.",
+        sub_style,
+    ))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    if len(serie_mensal) >= 2:
+        elementos.append(Paragraph("Tendência — faturamento mensal (últimos 6 meses)", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        elementos.append(_grafico_serie_mensal_produtos(serie_mensal))
+        if len(serie_mensal) >= 3:
+            xs = np.arange(len(serie_mensal))
+            ys = serie_mensal["valor_total"].to_numpy(dtype=float)
+            slope = np.polyfit(xs, ys, 1)[0]
+            media_serie_txt = ys.mean()
+            if media_serie_txt > 0 and abs(slope) / media_serie_txt > 0.05:
+                tendencia_txt = "📈 em alta" if slope > 0 else "📉 em queda"
+            else:
+                tendencia_txt = "➡️ estável"
+            elementos.append(Spacer(1, 0.15 * cm))
+            elementos.append(Paragraph(f"Tendência da série: {tendencia_txt}.", sub_style))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if not curva_abc.empty:
+        elementos.append(Paragraph("Curva ABC", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        contagem_classe = curva_abc["classe"].value_counts()
+        valor_classe = curva_abc.groupby("classe")["valor_total"].sum()
+        dados_abc = [["Classe", "Nº de Produtos", "Faturamento"]]
+        for classe in ["A", "B", "C"]:
+            dados_abc.append([
+                classe, str(int(contagem_classe.get(classe, 0))),
+                db.formatar_moeda(float(valor_classe.get(classe, 0.0))),
+            ])
+        tabela_abc = Table(dados_abc, colWidths=[3 * cm, 5 * cm, 8 * cm])
+        tabela_abc.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elementos.append(tabela_abc)
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(Paragraph(
+            "A = primeiros 80% do faturamento acumulado (prioridade de estoque/negociação). "
+            "B = de 80% a 95%. C = últimos 5% (cauda longa, candidatos a revisão de mix).",
+            sub_style,
+        ))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+        top_abc = curva_abc.head(15)
+        dados_top_abc = [["Cód.", "Produto", "Classe", "Faturamento", "% Acum."]]
+        for _, r in top_abc.iterrows():
+            dados_top_abc.append([
+                str(r["cod_produto"]), str(r["descricao_produto"])[:38], r["classe"],
+                db.formatar_moeda(r["valor_total"]), f"{r['pct_acumulado']:.1f}%",
+            ])
+        tabela_top_abc = Table(dados_top_abc, colWidths=[2 * cm, 7 * cm, 1.8 * cm, 3 * cm, 2.2 * cm])
+        tabela_top_abc.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(Paragraph("Top 15 produtos (curva ABC)", secao_style))
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(tabela_top_abc)
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if not mix_forn.empty:
+        elementos.append(Paragraph("Mix por Fornecedor", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        elementos.append(_grafico_pizza_mix(mix_forn))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if not mix_marca.empty:
+        elementos.append(Paragraph("Mix por Marca", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        elementos.append(_grafico_pizza_mix(mix_marca))
+        elementos.append(Spacer(1, 0.3 * cm))
+
+    if not comparativo.empty:
+        elementos.append(Paragraph("Comparativo de produtos — MoM e YoY", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        dados_comp = [["Cód.", "Produto", "Faturamento", "MoM", "YoY"]]
+        for _, r in comparativo.iterrows():
+            dados_comp.append([
+                str(r["cod_produto"]), str(r["descricao_produto"])[:34],
+                db.formatar_moeda(r["valor_total"]),
+                _fmt_pct_pdf(r["crescimento_mom_pct"]), _fmt_pct_pdf(r["crescimento_yoy_pct"]),
+            ])
+        tabela_comp = Table(dados_comp, colWidths=[2 * cm, 6.5 * cm, 3 * cm, 2.25 * cm, 2.25 * cm])
+        tabela_comp.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(tabela_comp)
+        elementos.append(Spacer(1, 0.15 * cm))
+        elementos.append(Paragraph(
+            "MoM = variação vs o mês anterior. YoY = variação vs o mesmo mês do ano anterior. "
+            "Sem % quando o produto não vendeu no período de comparação.",
+            sub_style,
+        ))
+
+    elementos.append(Spacer(1, 0.8 * cm))
+    elementos.append(HRFlowable(width="100%", color=colors.lightgrey, thickness=0.5))
+    elementos.append(Spacer(1, 0.2 * cm))
+    elementos.append(Paragraph(
+        f"Relatório gerado automaticamente em {datetime.now().strftime('%d/%m/%Y às %H:%M')}.",
+        sub_style,
+    ))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()

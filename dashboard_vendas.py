@@ -2290,13 +2290,84 @@ with tab_dashboard:
     if resumo_prod["n_produtos"] == 0:
         st.info("Nenhuma venda por produto lançada para o filtro selecionado.")
     else:
+        # ---- Indicadores do mês (+ projeção de fechamento, mesmo ritmo usado no
+        # topo do painel pro realizado geral) ----
         st.markdown("##### Indicadores do mês")
-        p1, p2, p3, p4, p5 = st.columns(5)
+        if dias_transcorridos > 0:
+            projecao_produtos = resumo_prod["faturamento_total"] / dias_transcorridos * dias_uteis_total
+        else:
+            projecao_produtos = resumo_prod["faturamento_total"]
+
+        p1, p2, p3, p4, p5, p6 = st.columns(6)
         kpi_card(p1, "Faturamento em Produtos", db.formatar_moeda(resumo_prod["faturamento_total"]), cor=VERDE)
-        kpi_card(p2, "Itens Vendidos", _fmt_qtd(resumo_prod["qtd_total"]))
-        kpi_card(p3, "Ticket Médio por Item", db.formatar_moeda(resumo_prod["ticket_medio_item"]))
-        kpi_card(p4, "Produtos Distintos (SKUs)", str(resumo_prod["n_produtos"]))
-        kpi_card(p5, "Fornecedores / Marcas", f"{resumo_prod['n_fornecedores']} / {resumo_prod['n_marcas']}")
+        kpi_card(p2, "Projeção de Fechamento", db.formatar_moeda(projecao_produtos))
+        kpi_card(p3, "Itens Vendidos", _fmt_qtd(resumo_prod["qtd_total"]))
+        kpi_card(p4, "Ticket Médio por Item", db.formatar_moeda(resumo_prod["ticket_medio_item"]))
+        kpi_card(p5, "Produtos Distintos (SKUs)", str(resumo_prod["n_produtos"]))
+        kpi_card(p6, "Fornecedores / Marcas", f"{resumo_prod['n_fornecedores']} / {resumo_prod['n_marcas']}")
+        st.caption(
+            "Projeção de Fechamento = mesmo cálculo de ritmo de meta do topo do painel "
+            "(realizado em produtos ÷ dias úteis transcorridos × dias úteis do mês), aplicado "
+            "ao faturamento em produtos."
+        )
+
+        # ---- Concentração de portfólio ----
+        concentracao = db.get_concentracao_portfolio(ano_filtro, mes_filtro, loja=loja_filtro)
+        c1, c2 = st.columns(2)
+        kpi_card(
+            c1, "Concentração — Top 5 produtos",
+            f"{concentracao['top5_pct']:.1f}%" if concentracao["top5_pct"] is not None else "—",
+        )
+        kpi_card(
+            c2, "Concentração — Top 10 produtos",
+            f"{concentracao['top10_pct']:.1f}%" if concentracao["top10_pct"] is not None else "—",
+        )
+        st.caption(
+            "% do faturamento em produtos do mês que vem só dos 5/10 SKUs mais vendidos — "
+            "quanto maior, mais o negócio depende de poucos produtos (risco de ruptura de "
+            "estoque ou de um fornecedor específico)."
+        )
+
+        # ---- Tendência do portfólio (série histórica já importada) ----
+        st.markdown("##### Tendência do faturamento em produtos (últimos 6 meses)")
+        serie_portfolio = db.get_serie_mensal_produtos(loja=loja_filtro, meses=6)
+        if len(serie_portfolio) < 2:
+            st.info("Ainda não há histórico suficiente (pelo menos 2 meses) pra montar a tendência.")
+        else:
+            serie_portfolio = serie_portfolio.copy()
+            serie_portfolio["rotulo"] = serie_portfolio.apply(
+                lambda r: f"{db.MESES_PT[int(r['mes'])][:3]}/{int(r['ano'])}", axis=1
+            )
+            fig_serie_prod = go.Figure(go.Scatter(
+                x=serie_portfolio["rotulo"], y=serie_portfolio["valor_total"],
+                mode="lines+markers", line=dict(color=AZUL, width=3), marker=dict(size=7),
+                fill="tozeroy", fillcolor="rgba(26, 82, 118, 0.08)",
+            ))
+            fig_serie_prod.update_layout(
+                margin=dict(l=10, r=10, t=20, b=10), height=280,
+                yaxis=dict(title="Faturamento em Produtos (R$)"),
+            )
+            st.plotly_chart(fig_serie_prod, use_container_width=True)
+
+            if len(serie_portfolio) >= 3:
+                xs_prod = np.arange(len(serie_portfolio), dtype=float)
+                ys_prod = serie_portfolio["valor_total"].to_numpy(dtype=float)
+                slope_prod = float(np.polyfit(xs_prod, ys_prod, 1)[0])
+                media_prod = float(ys_prod.mean())
+                slope_pct_prod = (slope_prod / media_prod * 100) if media_prod > 0 else 0.0
+                if slope_pct_prod > 5:
+                    rotulo_tend_prod = "📈 em alta"
+                elif slope_pct_prod < -5:
+                    rotulo_tend_prod = "📉 em queda"
+                else:
+                    rotulo_tend_prod = "➡️ estável"
+                st.caption(
+                    f"Tendência (regressão linear dos últimos {len(serie_portfolio)} meses): "
+                    f"{rotulo_tend_prod} — {'+' if slope_pct_prod >= 0 else ''}{slope_pct_prod:.1f}% "
+                    "ao mês, em média."
+                )
+
+        st.markdown("---")
 
         st.markdown("##### Curva ABC de produtos")
         st.caption(
@@ -2337,19 +2408,145 @@ with tab_dashboard:
                     use_container_width=True, hide_index=True,
                 )
 
-        st.markdown("##### Produtos mais vendidos (geral)")
-        produtos_top_df = db.get_produtos_mais_vendidos(ano_filtro, mes_filtro, loja=loja_filtro, top_n=15)
-        produtos_fmt = produtos_top_df.copy()
-        produtos_fmt["Qtd"] = produtos_fmt["qtd_total"].apply(_fmt_qtd)
-        produtos_fmt["Valor Total"] = produtos_fmt["valor_total"].apply(db.formatar_moeda)
-        st.dataframe(
-            produtos_fmt[["cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total"]]
-            .rename(columns={
-                "cod_produto": "Cód.", "descricao_produto": "Produto",
-                "marca": "Marca", "fornecedor": "Fornecedor",
-            }),
-            use_container_width=True, hide_index=True,
+        st.markdown("---")
+
+        # ---- Produtos novos e parados (churn de portfólio) ----
+        st.markdown("##### Produtos novos e parados")
+        st.caption(
+            "Compara o portfólio vendido este mês com os 3 meses anteriores (sem contar o mês "
+            "atual). Novos = venderam este mês e não vendiam há pelo menos 3 meses. "
+            "Parados = vendiam nesses últimos 3 meses e não venderam nada este mês — candidatos "
+            "a revisão de estoque/mix."
         )
+        novos_parados = db.get_produtos_novos_e_parados(ano_filtro, mes_filtro, loja=loja_filtro, janela_meses=3)
+        col_np1, col_np2 = st.columns(2)
+        with col_np1:
+            df_novos = novos_parados["novos"]
+            st.write(f"**🆕 Novos ({len(df_novos)})**")
+            if df_novos.empty:
+                st.caption("Nenhum produto novo neste mês.")
+            else:
+                novos_fmt = df_novos.copy()
+                novos_fmt["Valor no Mês"] = novos_fmt["valor_total"].apply(db.formatar_moeda)
+                st.dataframe(
+                    novos_fmt[["cod_produto", "descricao_produto", "fornecedor", "Valor no Mês"]]
+                    .rename(columns={"cod_produto": "Cód.", "descricao_produto": "Produto", "fornecedor": "Fornecedor"}),
+                    use_container_width=True, hide_index=True,
+                )
+        with col_np2:
+            df_parados = novos_parados["parados"]
+            st.write(f"**⏸️ Parados ({len(df_parados)})**")
+            if df_parados.empty:
+                st.caption("Nenhum produto parou de vender nesse período.")
+            else:
+                parados_fmt = df_parados.sort_values("valor_total", ascending=False).copy()
+                parados_fmt["Valor (na janela)"] = parados_fmt["valor_total"].apply(db.formatar_moeda)
+                parados_fmt["Última Venda"] = pd.to_datetime(parados_fmt["ultima_venda"]).dt.strftime("%d/%m/%Y")
+                parados_fmt["Dias Parado"] = parados_fmt["dias_parado"]
+                st.dataframe(
+                    parados_fmt[["cod_produto", "descricao_produto", "fornecedor", "Valor (na janela)", "Última Venda", "Dias Parado"]]
+                    .rename(columns={"cod_produto": "Cód.", "descricao_produto": "Produto", "fornecedor": "Fornecedor"}),
+                    use_container_width=True, hide_index=True,
+                )
+
+        st.markdown("---")
+
+        st.markdown("##### Produtos mais vendidos (geral) — com crescimento vs mês anterior")
+        produtos_top_df = db.get_comparativo_produtos(ano_filtro, mes_filtro, loja=loja_filtro, top_n=15)
+        if produtos_top_df.empty:
+            st.info("Nenhuma venda por produto lançada para o filtro selecionado.")
+        else:
+            produtos_fmt = produtos_top_df.copy()
+            produtos_fmt["Qtd"] = produtos_fmt["qtd_total"].apply(_fmt_qtd)
+            produtos_fmt["Valor Total"] = produtos_fmt["valor_total"].apply(db.formatar_moeda)
+            produtos_fmt["Crescimento"] = produtos_fmt["crescimento_pct"].apply(_fmt_pct_sinal)
+            st.dataframe(
+                produtos_fmt[["cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total", "Crescimento"]]
+                .rename(columns={
+                    "cod_produto": "Cód.", "descricao_produto": "Produto",
+                    "marca": "Marca", "fornecedor": "Fornecedor",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+        st.markdown("##### 🔍 Detalhar um produto")
+        st.caption(
+            "Busque um produto pelo código ou nome pra ver a série histórica mensal (com base "
+            "em toda a série já importada), tendência, e quais vendedores mais vendem ele."
+        )
+        termo_busca_produto = st.text_input(
+            "Buscar produto (código ou nome)", key="termo_busca_produto",
+            placeholder="Ex.: ureia, 1234, adubo...",
+        )
+        if termo_busca_produto and termo_busca_produto.strip():
+            resultados_busca = db.buscar_produtos(termo_busca_produto, loja=loja_filtro, limite=30)
+            if resultados_busca.empty:
+                st.info("Nenhum produto encontrado com esse termo.")
+            else:
+                opcoes_busca = {
+                    f"{row['cod_produto']} — {row['descricao_produto']}": row["cod_produto"]
+                    for _, row in resultados_busca.iterrows()
+                }
+                escolha_busca = st.selectbox(
+                    "Selecione o produto", list(opcoes_busca.keys()), key="sel_produto_detalhe"
+                )
+                cod_produto_sel = opcoes_busca[escolha_busca]
+
+                serie_prod_sel = db.get_serie_produto(cod_produto_sel, loja=loja_filtro, meses=12)
+                if serie_prod_sel.empty:
+                    st.info("Sem série histórica pra esse produto no filtro selecionado.")
+                else:
+                    serie_prod_sel = serie_prod_sel.copy()
+                    serie_prod_sel["rotulo"] = serie_prod_sel.apply(
+                        lambda r: f"{db.MESES_PT[int(r['mes'])][:3]}/{int(r['ano'])}", axis=1
+                    )
+                    dcol1, dcol2 = st.columns([1.4, 1])
+                    with dcol1:
+                        fig_prod_sel = go.Figure(go.Bar(
+                            x=serie_prod_sel["rotulo"], y=serie_prod_sel["valor_total"], marker_color=AZUL_CLARO,
+                        ))
+                        fig_prod_sel.update_layout(
+                            margin=dict(l=10, r=10, t=20, b=10), height=300,
+                            yaxis=dict(title="Faturamento (R$)"),
+                        )
+                        st.plotly_chart(fig_prod_sel, use_container_width=True)
+                    with dcol2:
+                        total_hist_prod = float(serie_prod_sel["valor_total"].sum())
+                        qtd_hist_prod = float(serie_prod_sel["qtd_total"].sum())
+                        media_mensal_prod = total_hist_prod / len(serie_prod_sel)
+                        kpi_card(st, "Faturamento (período)", db.formatar_moeda(total_hist_prod))
+                        kpi_card(st, "Qtd. Vendida (período)", _fmt_qtd(qtd_hist_prod))
+                        kpi_card(st, "Média Mensal", db.formatar_moeda(media_mensal_prod))
+                        if len(serie_prod_sel) >= 3:
+                            xs_ps = np.arange(len(serie_prod_sel), dtype=float)
+                            ys_ps = serie_prod_sel["valor_total"].to_numpy(dtype=float)
+                            slope_ps = float(np.polyfit(xs_ps, ys_ps, 1)[0])
+                            slope_pct_ps = (slope_ps / media_mensal_prod * 100) if media_mensal_prod > 0 else 0.0
+                            if slope_pct_ps > 5:
+                                rot_ps = "📈 em alta"
+                            elif slope_pct_ps < -5:
+                                rot_ps = "📉 em queda"
+                            else:
+                                rot_ps = "➡️ estável"
+                            kpi_card(st, "Tendência", rot_ps)
+
+                    st.write("**Quem mais vende esse produto (mês do filtro)**")
+                    vend_prod_df = db.get_vendedores_por_produto(
+                        cod_produto_sel, ano_filtro, mes_filtro, loja=loja_filtro
+                    )
+                    if vend_prod_df.empty:
+                        st.caption("Ninguém vendeu esse produto no mês selecionado.")
+                    else:
+                        vend_prod_fmt = vend_prod_df.copy()
+                        vend_prod_fmt["Qtd"] = vend_prod_fmt["qtd_total"].apply(_fmt_qtd)
+                        vend_prod_fmt["Valor Total"] = vend_prod_fmt["valor_total"].apply(db.formatar_moeda)
+                        st.dataframe(
+                            vend_prod_fmt[["nome", "loja", "Qtd", "Valor Total"]]
+                            .rename(columns={"nome": "Vendedor", "loja": "Loja"}),
+                            use_container_width=True, hide_index=True,
+                        )
+
+        st.markdown("---")
 
         st.markdown("##### Produtos mais vendidos por vendedor")
         top_vend_df = db.get_produtos_mais_vendidos_por_vendedor(ano_filtro, mes_filtro, loja=loja_filtro, top_n=5)
@@ -2359,19 +2556,47 @@ with tab_dashboard:
             opcoes_vend_prod = sorted(top_vend_df["nome"].unique().tolist())
             vendedor_sel_prod = st.selectbox("Vendedor", opcoes_vend_prod, key="sel_vendedor_produtos")
             sub_vend = top_vend_df[top_vend_df["nome"] == vendedor_sel_prod].copy()
+            total_vend_prod = float(sub_vend["valor_total"].sum())
+            sub_vend["% da Carteira (top 5)"] = sub_vend["valor_total"].apply(
+                lambda v: f"{(v / total_vend_prod * 100):.1f}%" if total_vend_prod > 0 else "—"
+            )
             sub_vend["Qtd"] = sub_vend["qtd_total"].apply(_fmt_qtd)
             sub_vend["Valor Total"] = sub_vend["valor_total"].apply(db.formatar_moeda)
             st.dataframe(
-                sub_vend[["cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total"]]
-                .rename(columns={
+                sub_vend[[
+                    "cod_produto", "descricao_produto", "marca", "fornecedor",
+                    "Qtd", "Valor Total", "% da Carteira (top 5)",
+                ]].rename(columns={
                     "cod_produto": "Cód.", "descricao_produto": "Produto",
                     "marca": "Marca", "fornecedor": "Fornecedor",
                 }),
                 use_container_width=True, hide_index=True,
             )
+            st.caption(
+                "% da Carteira (top 5) = participação do produto dentro dos 5 produtos mais "
+                "vendidos DESSE vendedor no mês (não do faturamento total dele)."
+            )
 
-        st.markdown("##### Ranking por marca / fornecedor — com crescimento vs mês anterior")
+        st.markdown("---")
+
+        st.markdown("##### Ranking por marca / fornecedor — com crescimento e tendência")
         col_rk1, col_rk2 = st.columns(2)
+
+        def _tendencia_grupo(serie_grupo_df, grupo):
+            sub = serie_grupo_df[serie_grupo_df["grupo"] == grupo].sort_values(["ano", "mes"])
+            if len(sub) < 3:
+                return "—"
+            xs_g = np.arange(len(sub), dtype=float)
+            ys_g = sub["valor_total"].to_numpy(dtype=float)
+            slope_g = float(np.polyfit(xs_g, ys_g, 1)[0])
+            media_g = float(ys_g.mean())
+            slope_pct_g = (slope_g / media_g * 100) if media_g > 0 else 0.0
+            if slope_pct_g > 5:
+                return "📈"
+            if slope_pct_g < -5:
+                return "📉"
+            return "➡️"
+
         with col_rk1:
             st.write("**Por Fornecedor**")
             rank_forn_df = db.get_comparativo_marca_fornecedor(
@@ -2380,11 +2605,17 @@ with tab_dashboard:
             if rank_forn_df.empty:
                 st.info("Sem dado de fornecedor no período.")
             else:
+                serie_forn = db.get_serie_mensal_grupo(
+                    loja=loja_filtro, agrupar_por="fornecedor", meses=6, top_n=10
+                )
                 rank_forn_fmt = rank_forn_df.copy()
                 rank_forn_fmt["Valor Total"] = rank_forn_fmt["valor_total"].apply(db.formatar_moeda)
                 rank_forn_fmt["Crescimento"] = rank_forn_fmt["crescimento_pct"].apply(_fmt_pct_sinal)
+                rank_forn_fmt["Tend. 6m"] = rank_forn_fmt["grupo"].apply(
+                    lambda g: _tendencia_grupo(serie_forn, g)
+                )
                 st.dataframe(
-                    rank_forn_fmt[["grupo", "Valor Total", "Crescimento"]].rename(columns={"grupo": "Fornecedor"}),
+                    rank_forn_fmt[["grupo", "Valor Total", "Crescimento", "Tend. 6m"]].rename(columns={"grupo": "Fornecedor"}),
                     use_container_width=True, hide_index=True,
                 )
         with col_rk2:
@@ -2395,18 +2626,224 @@ with tab_dashboard:
             if rank_marca_df.empty:
                 st.info("Sem dado de marca no período.")
             else:
+                serie_marca = db.get_serie_mensal_grupo(
+                    loja=loja_filtro, agrupar_por="marca", meses=6, top_n=10
+                )
                 rank_marca_fmt = rank_marca_df.copy()
                 rank_marca_fmt["Valor Total"] = rank_marca_fmt["valor_total"].apply(db.formatar_moeda)
                 rank_marca_fmt["Crescimento"] = rank_marca_fmt["crescimento_pct"].apply(_fmt_pct_sinal)
+                rank_marca_fmt["Tend. 6m"] = rank_marca_fmt["grupo"].apply(
+                    lambda g: _tendencia_grupo(serie_marca, g)
+                )
                 st.dataframe(
-                    rank_marca_fmt[["grupo", "Valor Total", "Crescimento"]].rename(columns={"grupo": "Marca"}),
+                    rank_marca_fmt[["grupo", "Valor Total", "Crescimento", "Tend. 6m"]].rename(columns={"grupo": "Marca"}),
                     use_container_width=True, hide_index=True,
                 )
         st.caption(
             "Crescimento = variação do faturamento do grupo (fornecedor/marca) vs o mesmo grupo "
-            "no mês anterior. Sem % quando o grupo não teve venda no mês anterior (nada pra "
-            "comparar)."
+            "no mês anterior. Tend. 6m = direção da regressão linear do faturamento mensal do "
+            "grupo nos últimos 6 meses (📈 alta / 📉 queda / ➡️ estável, precisa de pelo menos "
+            "3 meses com venda). Sem % de crescimento quando o grupo não teve venda no mês "
+            "anterior (nada pra comparar)."
         )
+
+        # ---- Mix de Produtos — por Vendedor / por Loja ----
+        st.markdown("---")
+        st.markdown("##### 🧬 Mix de Vendas Completo — por Vendedor ou por Loja")
+        st.caption(
+            "Analytics completo de portfólio para UM vendedor específico ou UMA loja: curva "
+            "ABC própria, mix completo por marca/fornecedor (não só o top N), concentração, "
+            "consistência mês a mês, e comparativos de produtos mês a mês (MoM) e ano a ano "
+            "(YoY) em %."
+        )
+        modo_mix = st.radio(
+            "Analisar por", ["Vendedor", "Loja"], horizontal=True, key="modo_mix_produtos"
+        )
+
+        vendedor_id_mix = None
+        loja_escopo_mix = None
+        rotulo_escopo_mix = None
+        if modo_mix == "Vendedor":
+            vendedores_ativos_mix = db.get_vendedores(loja=loja_filtro, apenas_ativos=True)
+            if vendedores_ativos_mix.empty:
+                st.info("Nenhum vendedor ativo no filtro selecionado.")
+            else:
+                opcoes_mix_vend = {
+                    f"{r['nome']} ({r['loja']})": r["id"] for _, r in vendedores_ativos_mix.iterrows()
+                }
+                escolha_mix_vend = st.selectbox(
+                    "Vendedor", list(opcoes_mix_vend.keys()), key="sel_mix_vendedor"
+                )
+                vendedor_id_mix = opcoes_mix_vend[escolha_mix_vend]
+                rotulo_escopo_mix = escolha_mix_vend
+        else:
+            loja_escopo_mix = st.selectbox("Loja", db.LOJAS, key="sel_mix_loja")
+            rotulo_escopo_mix = loja_escopo_mix
+
+        if vendedor_id_mix or loja_escopo_mix:
+            resumo_mix = db.get_resumo_produtos_mes(
+                ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix
+            )
+            if resumo_mix["n_produtos"] == 0:
+                st.info(f"Nenhuma venda por produto lançada para {rotulo_escopo_mix} no mês selecionado.")
+            else:
+                concentracao_mix = db.get_concentracao_portfolio(
+                    ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix
+                )
+                serie_mix = db.get_serie_mensal_produtos(
+                    loja=loja_escopo_mix, vendedor_id=vendedor_id_mix, meses=6
+                )
+                cv_mix = None
+                if len(serie_mix) >= 3:
+                    media_serie_mix = float(serie_mix["valor_total"].mean())
+                    desvio_serie_mix = float(serie_mix["valor_total"].std(ddof=0))
+                    cv_mix = (desvio_serie_mix / media_serie_mix * 100) if media_serie_mix > 0 else None
+
+                m1, m2, m3, m4, m5 = st.columns(5)
+                kpi_card(m1, "Faturamento em Produtos", db.formatar_moeda(resumo_mix["faturamento_total"]), cor=VERDE)
+                kpi_card(m2, "SKUs Distintos", str(resumo_mix["n_produtos"]))
+                kpi_card(
+                    m3, "Concentração Top 5",
+                    f"{concentracao_mix['top5_pct']:.1f}%" if concentracao_mix["top5_pct"] is not None else "—",
+                )
+                kpi_card(
+                    m4, "Concentração Top 10",
+                    f"{concentracao_mix['top10_pct']:.1f}%" if concentracao_mix["top10_pct"] is not None else "—",
+                )
+                kpi_card(
+                    m5, "Consistência (CV, 6m)",
+                    f"{cv_mix:.0f}%" if cv_mix is not None else "—",
+                )
+                st.caption(
+                    "Consistência (CV) = coeficiente de variação do faturamento mensal em produtos "
+                    "nos últimos 6 meses (desvio padrão ÷ média) — quanto MENOR, mais regular o "
+                    "volume mês a mês; valores altos indicam meses de pico intercalados com meses fracos."
+                )
+
+                st.write(f"**Curva ABC — {rotulo_escopo_mix}**")
+                curva_abc_mix = db.get_curva_abc_produtos(
+                    ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix
+                )
+                if curva_abc_mix.empty:
+                    st.caption("Sem dado suficiente.")
+                else:
+                    contagem_classe_mix = curva_abc_mix["classe"].value_counts()
+                    valor_classe_mix = curva_abc_mix.groupby("classe")["valor_total"].sum()
+                    cma1, cma2, cma3 = st.columns(3)
+                    for col_classe, classe, cor_classe in [(cma1, "A", VERDE), (cma2, "B", "#f39c12"), (cma3, "C", "#888888")]:
+                        n_itens_mix = int(contagem_classe_mix.get(classe, 0))
+                        valor_itens_mix = float(valor_classe_mix.get(classe, 0.0))
+                        kpi_card(
+                            col_classe, f"Classe {classe}",
+                            f"{n_itens_mix} produto(s) — {db.formatar_moeda(valor_itens_mix)}",
+                            cor=cor_classe,
+                        )
+                    with st.expander(f"Ver Curva ABC completa — {rotulo_escopo_mix}", expanded=False):
+                        abc_mix_fmt = curva_abc_mix.copy()
+                        abc_mix_fmt["Qtd"] = abc_mix_fmt["qtd_total"].apply(_fmt_qtd)
+                        abc_mix_fmt["Valor Total"] = abc_mix_fmt["valor_total"].apply(db.formatar_moeda)
+                        abc_mix_fmt["Participação"] = abc_mix_fmt["pct_participacao"].apply(lambda v: f"{v:.2f}%")
+                        abc_mix_fmt["Acumulado"] = abc_mix_fmt["pct_acumulado"].apply(lambda v: f"{v:.2f}%")
+                        st.dataframe(
+                            abc_mix_fmt[[
+                                "cod_produto", "descricao_produto", "marca", "fornecedor",
+                                "Qtd", "Valor Total", "Participação", "Acumulado", "classe",
+                            ]].rename(columns={
+                                "cod_produto": "Cód.", "descricao_produto": "Produto",
+                                "marca": "Marca", "fornecedor": "Fornecedor", "classe": "Classe",
+                            }),
+                            use_container_width=True, hide_index=True,
+                        )
+
+                st.write(f"**Mix completo por Fornecedor e Marca — {rotulo_escopo_mix}**")
+                mcol1, mcol2 = st.columns(2)
+                with mcol1:
+                    mix_forn = db.get_mix_marca_fornecedor(
+                        ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix, agrupar_por="fornecedor"
+                    )
+                    if mix_forn.empty:
+                        st.caption("Sem dado de fornecedor.")
+                    else:
+                        fig_mix_forn = go.Figure(go.Bar(
+                            x=mix_forn["pct_participacao"], y=mix_forn["grupo"], orientation="h", marker_color=AZUL_CLARO,
+                        ))
+                        fig_mix_forn.update_layout(
+                            margin=dict(l=10, r=10, t=20, b=10), height=max(250, 24 * len(mix_forn)),
+                            xaxis=dict(title="% do faturamento"), yaxis=dict(autorange="reversed"),
+                        )
+                        st.plotly_chart(fig_mix_forn, use_container_width=True)
+                        with st.expander("Ver tabela completa — Fornecedores", expanded=False):
+                            mix_forn_fmt = mix_forn.copy()
+                            mix_forn_fmt["Valor Total"] = mix_forn_fmt["valor_total"].apply(db.formatar_moeda)
+                            mix_forn_fmt["Participação"] = mix_forn_fmt["pct_participacao"].apply(lambda v: f"{v:.2f}%")
+                            st.dataframe(
+                                mix_forn_fmt[["grupo", "Valor Total", "Participação"]].rename(columns={"grupo": "Fornecedor"}),
+                                use_container_width=True, hide_index=True,
+                            )
+                with mcol2:
+                    mix_marca = db.get_mix_marca_fornecedor(
+                        ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix, agrupar_por="marca"
+                    )
+                    if mix_marca.empty:
+                        st.caption("Sem dado de marca.")
+                    else:
+                        fig_mix_marca = go.Figure(go.Bar(
+                            x=mix_marca["pct_participacao"], y=mix_marca["grupo"], orientation="h", marker_color=VERDE,
+                        ))
+                        fig_mix_marca.update_layout(
+                            margin=dict(l=10, r=10, t=20, b=10), height=max(250, 24 * len(mix_marca)),
+                            xaxis=dict(title="% do faturamento"), yaxis=dict(autorange="reversed"),
+                        )
+                        st.plotly_chart(fig_mix_marca, use_container_width=True)
+                        with st.expander("Ver tabela completa — Marcas", expanded=False):
+                            mix_marca_fmt = mix_marca.copy()
+                            mix_marca_fmt["Valor Total"] = mix_marca_fmt["valor_total"].apply(db.formatar_moeda)
+                            mix_marca_fmt["Participação"] = mix_marca_fmt["pct_participacao"].apply(lambda v: f"{v:.2f}%")
+                            st.dataframe(
+                                mix_marca_fmt[["grupo", "Valor Total", "Participação"]].rename(columns={"grupo": "Marca"}),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                st.write(f"**Comparativo de produtos — mês a mês (MoM) e ano a ano (YoY) — {rotulo_escopo_mix}**")
+                comp_mix = db.get_comparativo_produtos(
+                    ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix, top_n=20
+                )
+                if comp_mix.empty:
+                    st.caption("Sem dado suficiente pra montar o comparativo.")
+                else:
+                    comp_mix_fmt = comp_mix.copy()
+                    comp_mix_fmt["Qtd"] = comp_mix_fmt["qtd_total"].apply(_fmt_qtd)
+                    comp_mix_fmt["Valor Total"] = comp_mix_fmt["valor_total"].apply(db.formatar_moeda)
+                    comp_mix_fmt["MoM"] = comp_mix_fmt["crescimento_mom_pct"].apply(_fmt_pct_sinal)
+                    comp_mix_fmt["YoY"] = comp_mix_fmt["crescimento_yoy_pct"].apply(_fmt_pct_sinal)
+                    st.dataframe(
+                        comp_mix_fmt[[
+                            "cod_produto", "descricao_produto", "marca", "fornecedor", "Qtd", "Valor Total", "MoM", "YoY",
+                        ]].rename(columns={
+                            "cod_produto": "Cód.", "descricao_produto": "Produto",
+                            "marca": "Marca", "fornecedor": "Fornecedor",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption(
+                        "MoM = variação vs o mês anterior. YoY = variação vs o mesmo mês do ano "
+                        "anterior. Sem % quando o produto não vendeu no período de comparação "
+                        "(nada pra comparar)."
+                    )
+
+                st.write("**Exportar esse recorte em PDF**")
+                pdf_mix_bytes = pdf_export.gerar_pdf_mix_produtos(
+                    ano_filtro, mes_filtro, loja=loja_escopo_mix, vendedor_id=vendedor_id_mix,
+                    rotulo_escopo=rotulo_escopo_mix,
+                )
+                nome_pdf_mix = (
+                    f"Mix_Produtos_{rotulo_escopo_mix.replace(' ', '_').replace('(', '').replace(')', '')}"
+                    f"_{db.MESES_PT[mes_filtro]}_{ano_filtro}.pdf"
+                )
+                st.download_button(
+                    "⬇️ Baixar PDF do mix de produtos", data=pdf_mix_bytes, file_name=nome_pdf_mix,
+                    mime="application/pdf", key="btn_pdf_mix_produtos",
+                )
 
     st.markdown("---")
 

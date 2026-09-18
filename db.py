@@ -1680,9 +1680,11 @@ def get_produtos_mais_vendidos_por_vendedor(ano, mes, loja=None, top_n=5):
 
 
 @cache_leitura()
-def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", top_n=15):
+def get_ranking_marca_fornecedor(ano, mes, loja=None, vendedor_id=None, agrupar_por="fornecedor", top_n=15):
     """Ranking por marca OU fornecedor (agrupar_por: 'marca' ou 'fornecedor'), somando
-    o valor R$ vendido no mês por todos os vendedores do filtro."""
+    o valor R$ vendido no mês — de todos os vendedores do filtro, ou só de UM
+    vendedor específico se `vendedor_id` for informado (mix de produtos do
+    vendedor, por marca/fornecedor)."""
     if agrupar_por not in ("marca", "fornecedor"):
         raise ValueError("agrupar_por deve ser 'marca' ou 'fornecedor'")
     cols = ["grupo", "qtd_total", "valor_total"]
@@ -1699,6 +1701,9 @@ def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", 
     if loja and loja != "Ambas":
         query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
+    if vendedor_id:
+        query += " AND vp.vendedor_id = :vendedor_id"
+        params["vendedor_id"] = vendedor_id
     query += f" GROUP BY vp.{agrupar_por} ORDER BY valor_total DESC LIMIT :top_n"
     params["top_n"] = top_n
     df = pd.read_sql_query(text(query), get_engine(), params=params)
@@ -1710,11 +1715,12 @@ def get_ranking_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", 
 
 
 @cache_leitura()
-def get_resumo_produtos_mes(ano, mes, loja=None):
+def get_resumo_produtos_mes(ano, mes, loja=None, vendedor_id=None):
     """KPIs gerais de Vendas por Produto no mês: faturamento total, quantidade
     total de itens vendidos, ticket médio por item (faturamento ÷ qtd) e a
     contagem de produtos/fornecedores/marcas distintos que tiveram venda no
-    período — a base de qualquer análise de portfólio de produtos."""
+    período — a base de qualquer análise de portfólio de produtos (geral, de uma
+    loja, ou de UM vendedor específico com `vendedor_id`)."""
     ini = date(ano, mes, 1)
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim = date(ano, mes, ultimo_dia)
@@ -1733,6 +1739,9 @@ def get_resumo_produtos_mes(ano, mes, loja=None):
     if loja and loja != "Ambas":
         query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
+    if vendedor_id:
+        query += " AND vp.vendedor_id = :vendedor_id"
+        params["vendedor_id"] = vendedor_id
     df = pd.read_sql_query(text(query), get_engine(), params=params)
     row = df.iloc[0]
     faturamento_total = float(row["faturamento_total"])
@@ -1748,7 +1757,7 @@ def get_resumo_produtos_mes(ano, mes, loja=None):
 
 
 @cache_leitura()
-def get_curva_abc_produtos(ano, mes, loja=None):
+def get_curva_abc_produtos(ano, mes, loja=None, vendedor_id=None):
     """Curva ABC dos produtos vendidos no mês — a régua clássica de gestão de
     portfólio/estoque (princípio de Pareto aplicado a produto): ordena por
     faturamento decrescente, calcula o % de participação e o % acumulado de cada
@@ -1758,12 +1767,14 @@ def get_curva_abc_produtos(ano, mes, loja=None):
           de estoque/negociação com fornecedor);
       B — de 80% a 95% acumulado (relevância intermediária);
       C — os últimos 5% (cauda longa, muitos produtos com pouca representatividade
-          individual — candidatos a revisão de mix)."""
+          individual — candidatos a revisão de mix).
+    Com `vendedor_id`, calcula a curva ABC só da carteira DESSE vendedor (produtos
+    que ele prioriza/domina), em vez do portfólio inteiro do filtro."""
     cols = [
         "cod_produto", "descricao_produto", "marca", "fornecedor",
         "qtd_total", "valor_total", "pct_participacao", "pct_acumulado", "classe",
     ]
-    df = get_produtos_mais_vendidos(ano, mes, loja=loja, top_n=100000)
+    df = get_produtos_mais_vendidos(ano, mes, loja=loja, vendedor_id=vendedor_id, top_n=100000)
     if df.empty:
         return pd.DataFrame(columns=cols)
 
@@ -1786,63 +1797,110 @@ def get_curva_abc_produtos(ano, mes, loja=None):
     return df[cols]
 
 
+def _anexar_comparativos_mom_yoy(atual, anterior_mes, anterior_ano, chave):
+    """Anexa em `atual` (DataFrame com colunas `chave`/valor_total) os comparativos
+    MÊS A MÊS (contra `anterior_mes`) e ANO A ANO/mesmo mês do ano anterior (contra
+    `anterior_ano`), casando pela coluna `chave` — reaproveitado tanto pra produto
+    individual quanto pra marca/fornecedor."""
+    atual = atual.copy()
+    lookup_mes = anterior_mes.set_index(chave)["valor_total"].to_dict() if not anterior_mes.empty else {}
+    lookup_ano = anterior_ano.set_index(chave)["valor_total"].to_dict() if not anterior_ano.empty else {}
+
+    atual["valor_total_mes_anterior"] = atual[chave].map(lookup_mes).fillna(0.0)
+    atual["crescimento_mom_pct"] = atual.apply(
+        lambda r: (
+            (r["valor_total"] - r["valor_total_mes_anterior"]) / r["valor_total_mes_anterior"] * 100
+        ) if r["valor_total_mes_anterior"] > 0 else None,
+        axis=1,
+    )
+    atual["valor_total_ano_anterior"] = atual[chave].map(lookup_ano).fillna(0.0)
+    atual["crescimento_yoy_pct"] = atual.apply(
+        lambda r: (
+            (r["valor_total"] - r["valor_total_ano_anterior"]) / r["valor_total_ano_anterior"] * 100
+        ) if r["valor_total_ano_anterior"] > 0 else None,
+        axis=1,
+    )
+    # Mantidos por compatibilidade com quem já usava o comparativo só mês a mês.
+    atual["valor_total_anterior"] = atual["valor_total_mes_anterior"]
+    atual["crescimento_pct"] = atual["crescimento_mom_pct"]
+    return atual
+
+
 @cache_leitura()
-def get_comparativo_marca_fornecedor(ano, mes, loja=None, agrupar_por="fornecedor", top_n=10):
+def get_comparativo_marca_fornecedor(ano, mes, loja=None, vendedor_id=None, agrupar_por="fornecedor", top_n=10):
     """Ranking por marca/fornecedor do mês (ver get_ranking_marca_fornecedor), com
-    o faturamento do mês anterior ao lado e o % de crescimento — identifica quem
-    está em alta ou em queda, não só o tamanho absoluto."""
+    o faturamento do mês anterior E do mesmo mês do ano anterior ao lado, e os %
+    de crescimento mês a mês (MoM) e ano a ano (YoY) — identifica quem está em
+    alta ou em queda, tanto no curto quanto no longo prazo. Com `vendedor_id`,
+    compara o mix de UM vendedor específico ao longo do tempo."""
     ano_ant, mes_ant = mes_anterior(ano, mes)
-    atual = get_ranking_marca_fornecedor(ano, mes, loja=loja, agrupar_por=agrupar_por, top_n=top_n)
-    cols = list(atual.columns) + ["valor_total_anterior", "crescimento_pct"]
+    atual = get_ranking_marca_fornecedor(
+        ano, mes, loja=loja, vendedor_id=vendedor_id, agrupar_por=agrupar_por, top_n=top_n
+    )
+    cols = list(atual.columns) + [
+        "valor_total_mes_anterior", "crescimento_mom_pct",
+        "valor_total_ano_anterior", "crescimento_yoy_pct",
+        "valor_total_anterior", "crescimento_pct",
+    ]
     if atual.empty:
         return pd.DataFrame(columns=cols)
 
-    anterior = get_ranking_marca_fornecedor(ano_ant, mes_ant, loja=loja, agrupar_por=agrupar_por, top_n=100000)
-    anterior_lookup = anterior.set_index("grupo")["valor_total"].to_dict() if not anterior.empty else {}
-
-    atual = atual.copy()
-    atual["valor_total_anterior"] = atual["grupo"].map(anterior_lookup).fillna(0.0)
-    atual["crescimento_pct"] = atual.apply(
-        lambda r: (
-            (r["valor_total"] - r["valor_total_anterior"]) / r["valor_total_anterior"] * 100
-        ) if r["valor_total_anterior"] > 0 else None,
-        axis=1,
+    anterior_mes = get_ranking_marca_fornecedor(
+        ano_ant, mes_ant, loja=loja, vendedor_id=vendedor_id, agrupar_por=agrupar_por, top_n=100000
     )
-    return atual
+    anterior_ano = get_ranking_marca_fornecedor(
+        ano - 1, mes, loja=loja, vendedor_id=vendedor_id, agrupar_por=agrupar_por, top_n=100000
+    )
+    return _anexar_comparativos_mom_yoy(atual, anterior_mes, anterior_ano, "grupo")
 
 
 @cache_leitura()
 def get_comparativo_produtos(ano, mes, loja=None, vendedor_id=None, top_n=15):
     """Top produtos do mês (ver get_produtos_mais_vendidos) com o faturamento do
-    mesmo produto no mês anterior ao lado e o % de crescimento — mesmo padrão do
-    comparativo por marca/fornecedor, agora no nível de produto individual."""
+    mesmo produto no mês anterior E no mesmo mês do ano anterior, e os % de
+    crescimento MoM e YoY — mesmo padrão do comparativo por marca/fornecedor,
+    agora no nível de produto individual."""
     ano_ant, mes_ant = mes_anterior(ano, mes)
     atual = get_produtos_mais_vendidos(ano, mes, loja=loja, vendedor_id=vendedor_id, top_n=top_n)
-    cols = list(atual.columns) + ["valor_total_anterior", "crescimento_pct"]
+    cols = list(atual.columns) + [
+        "valor_total_mes_anterior", "crescimento_mom_pct",
+        "valor_total_ano_anterior", "crescimento_yoy_pct",
+        "valor_total_anterior", "crescimento_pct",
+    ]
     if atual.empty:
         return pd.DataFrame(columns=cols)
 
-    anterior = get_produtos_mais_vendidos(
+    anterior_mes = get_produtos_mais_vendidos(
         ano_ant, mes_ant, loja=loja, vendedor_id=vendedor_id, top_n=100000
     )
-    anterior_lookup = anterior.set_index("cod_produto")["valor_total"].to_dict() if not anterior.empty else {}
-
-    atual = atual.copy()
-    atual["valor_total_anterior"] = atual["cod_produto"].map(anterior_lookup).fillna(0.0)
-    atual["crescimento_pct"] = atual.apply(
-        lambda r: (
-            (r["valor_total"] - r["valor_total_anterior"]) / r["valor_total_anterior"] * 100
-        ) if r["valor_total_anterior"] > 0 else None,
-        axis=1,
+    anterior_ano = get_produtos_mais_vendidos(
+        ano - 1, mes, loja=loja, vendedor_id=vendedor_id, top_n=100000
     )
-    return atual
+    return _anexar_comparativos_mom_yoy(atual, anterior_mes, anterior_ano, "cod_produto")
 
 
-def get_concentracao_portfolio(ano, mes, loja=None):
+def get_mix_marca_fornecedor(ano, mes, loja=None, vendedor_id=None, agrupar_por="fornecedor"):
+    """Mix COMPLETO (sem limite de top N) por marca/fornecedor, com % de
+    participação no faturamento do filtro — a composição inteira da carteira
+    (do vendedor, da loja, ou geral), não só os líderes. Base do "mix de vendas
+    completo" por vendedor/loja."""
+    df = get_ranking_marca_fornecedor(
+        ano, mes, loja=loja, vendedor_id=vendedor_id, agrupar_por=agrupar_por, top_n=100000
+    )
+    if df.empty:
+        return df
+    df = df.sort_values("valor_total", ascending=False).reset_index(drop=True)
+    total = float(df["valor_total"].sum())
+    df["pct_participacao"] = (df["valor_total"] / total * 100) if total > 0 else 0.0
+    return df
+
+
+def get_concentracao_portfolio(ano, mes, loja=None, vendedor_id=None):
     """Quanto do faturamento em produtos do mês está concentrado nos top 5/10 SKUs —
-    quanto maior, mais dependente o negócio fica de poucos produtos (risco de
-    ruptura de estoque ou de um fornecedor específico)."""
-    df = get_produtos_mais_vendidos(ano, mes, loja=loja, top_n=100000)
+    quanto maior, mais dependente o negócio (ou o vendedor, com `vendedor_id`)
+    fica de poucos produtos (risco de ruptura de estoque ou de um fornecedor
+    específico)."""
+    df = get_produtos_mais_vendidos(ano, mes, loja=loja, vendedor_id=vendedor_id, top_n=100000)
     if df.empty:
         return {"top5_pct": None, "top10_pct": None, "faturamento_total": 0.0, "n_produtos": 0}
     df = df.sort_values("valor_total", ascending=False)
@@ -2006,10 +2064,11 @@ def get_vendedores_por_produto(cod_produto, ano, mes, loja=None):
 
 
 @cache_leitura()
-def get_serie_mensal_produtos(loja=None, meses=12):
+def get_serie_mensal_produtos(loja=None, vendedor_id=None, meses=12):
     """Série MENSAL do faturamento total em Vendas por Produto (todos os SKUs
     somados), últimos `meses` meses — base do gráfico de tendência/projeção do
-    portfólio inteiro, usando a série histórica já importada (backfill + sync)."""
+    portfólio inteiro (ou de um vendedor específico, com `vendedor_id`), usando a
+    série histórica já importada (backfill + sync)."""
     hoje = date.today()
     ano_ini, mes_ini = hoje.year, hoje.month
     for _ in range(meses - 1):
@@ -2027,6 +2086,9 @@ def get_serie_mensal_produtos(loja=None, meses=12):
     if loja and loja != "Ambas":
         query += " AND COALESCE(vp.loja, v.loja) = :loja"
         params["loja"] = loja
+    if vendedor_id:
+        query += " AND vp.vendedor_id = :vendedor_id"
+        params["vendedor_id"] = vendedor_id
     query += " GROUP BY 1, 2 ORDER BY 1, 2"
     df = pd.read_sql_query(text(query), get_engine(), params=params)
     if not df.empty:
