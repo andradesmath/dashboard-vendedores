@@ -2328,6 +2328,109 @@ with tab_dashboard:
             "estoque ou de um fornecedor específico)."
         )
 
+        # ---- Comparativo de Produtos entre Lojas ----
+        st.markdown("---")
+        st.markdown("##### 🏬 Comparativo de Produtos entre Lojas")
+        st.caption(
+            "Compara o portfólio de produtos vendido em cada loja no mês: faturamento, "
+            "amplitude de sortimento (SKUs/fornecedores/marcas), ticket médio por item e "
+            "concentração — com sinais de alerta automáticos pra apoiar decisões comerciais "
+            "(padronizar compras entre lojas, replicar um mix vencedor, revisar fornecedor, etc.)."
+        )
+        comp_lojas = db.get_comparativo_produtos_lojas(ano_filtro, mes_filtro)
+        if comp_lojas.empty or comp_lojas["faturamento_total"].sum() <= 0:
+            st.info("Sem dado de produto suficiente em nenhuma loja para montar o comparativo.")
+        else:
+            comp_lojas_fmt = comp_lojas.copy()
+            comp_lojas_fmt["Faturamento"] = comp_lojas_fmt["faturamento_total"].apply(db.formatar_moeda)
+            comp_lojas_fmt["Itens Vendidos"] = comp_lojas_fmt["qtd_total"].apply(_fmt_qtd)
+            comp_lojas_fmt["Ticket Médio/Item"] = comp_lojas_fmt["ticket_medio_item"].apply(db.formatar_moeda)
+            comp_lojas_fmt["Top 5"] = comp_lojas_fmt["top5_pct"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "—")
+            comp_lojas_fmt["Top 10"] = comp_lojas_fmt["top10_pct"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "—")
+            st.dataframe(
+                comp_lojas_fmt[[
+                    "loja", "Faturamento", "Itens Vendidos", "n_produtos", "n_fornecedores", "n_marcas",
+                    "Ticket Médio/Item", "Top 5", "Top 10",
+                ]].rename(columns={
+                    "loja": "Loja", "n_produtos": "SKUs", "n_fornecedores": "Fornec.", "n_marcas": "Marcas",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.write("**Tendência do faturamento em produtos — Porteira vs. Casa de Adubo (6 meses)**")
+            fig_comp_lojas = go.Figure()
+            cores_loja = {db.LOJAS[0]: AZUL, db.LOJAS[1]: VERDE} if len(db.LOJAS) >= 2 else {}
+            for loja_nome in db.LOJAS:
+                serie_loja = db.get_serie_mensal_produtos(loja=loja_nome, meses=6)
+                if serie_loja.empty:
+                    continue
+                serie_loja = serie_loja.copy()
+                serie_loja["rotulo"] = serie_loja.apply(
+                    lambda r: f"{db.MESES_PT[int(r['mes'])][:3]}/{int(r['ano'])}", axis=1
+                )
+                fig_comp_lojas.add_trace(go.Scatter(
+                    x=serie_loja["rotulo"], y=serie_loja["valor_total"], mode="lines+markers",
+                    name=loja_nome, line=dict(color=cores_loja.get(loja_nome), width=3),
+                ))
+            fig_comp_lojas.update_layout(
+                margin=dict(l=10, r=10, t=20, b=10), height=300,
+                yaxis=dict(title="Faturamento em Produtos (R$)"),
+                legend=dict(orientation="h", y=-0.2),
+            )
+            st.plotly_chart(fig_comp_lojas, use_container_width=True)
+
+            st.write("**Sortimento — produtos comuns vs. exclusivos de cada loja**")
+            sortimento_lojas = db.get_sortimento_entre_lojas(ano_filtro, mes_filtro)
+            if sortimento_lojas.empty:
+                st.caption("Sem dado de produto suficiente pra comparar o sortimento.")
+            else:
+                n_comum = int((sortimento_lojas["status"] == "Comum").sum())
+                scol1, scol2, scol3 = st.columns(3)
+                kpi_card(scol1, "Produtos em Comum (nas duas lojas)", str(n_comum), cor=VERDE)
+                for col_scol, loja_nome in zip([scol2, scol3], db.LOJAS):
+                    n_exclusivo = int((sortimento_lojas["status"] == f"Só {loja_nome}").sum())
+                    valor_exclusivo = float(
+                        sortimento_lojas.loc[sortimento_lojas["status"] == f"Só {loja_nome}", loja_nome].sum()
+                    )
+                    kpi_card(
+                        col_scol, f"Só {loja_nome}",
+                        f"{n_exclusivo} produto(s) — {db.formatar_moeda(valor_exclusivo)}",
+                    )
+                with st.expander("Ver produtos exclusivos de cada loja", expanded=False):
+                    exclusivos_df = sortimento_lojas[sortimento_lojas["status"] != "Comum"].copy()
+                    if exclusivos_df.empty:
+                        st.caption("Todos os produtos vendidos no mês aparecem nas duas lojas.")
+                    else:
+                        exclusivos_df = exclusivos_df.sort_values(
+                            by=db.LOJAS[0] if db.LOJAS else exclusivos_df.columns[-1], ascending=False
+                        )
+                        for loja_nome in db.LOJAS:
+                            exclusivos_df[loja_nome] = exclusivos_df[loja_nome].apply(db.formatar_moeda)
+                        st.dataframe(
+                            exclusivos_df[
+                                ["cod_produto", "descricao_produto", "marca", "fornecedor"] + db.LOJAS + ["status"]
+                            ].rename(columns={
+                                "cod_produto": "Cód.", "descricao_produto": "Produto",
+                                "marca": "Marca", "fornecedor": "Fornecedor", "status": "Exclusivo de",
+                            }),
+                            use_container_width=True, hide_index=True,
+                        )
+
+            st.write("**🔔 Sinais de alerta — comparativo entre lojas**")
+            alertas_lojas = db.gerar_alertas_comparativo_lojas(ano_filtro, mes_filtro)
+            if not alertas_lojas:
+                st.success("✅ Nenhum sinal relevante — indicadores das duas lojas dentro do esperado.")
+            else:
+                for icone_alerta, texto_alerta in alertas_lojas:
+                    (st.error if icone_alerta == "🔴" else st.warning)(texto_alerta)
+            st.caption(
+                "Sinais gerados automaticamente comparando concentração de portfólio, crescimento "
+                "do faturamento em produtos (mês a mês), amplitude de sortimento (SKUs distintos), "
+                "ticket médio por item, e produtos fortes vendidos numa loja e ausentes na outra."
+            )
+
+        st.markdown("---")
+
         # ---- Tendência do portfólio (série histórica já importada) ----
         st.markdown("##### Tendência do faturamento em produtos (últimos 6 meses)")
         serie_portfolio = db.get_serie_mensal_produtos(loja=loja_filtro, meses=6)

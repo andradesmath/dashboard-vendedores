@@ -2175,6 +2175,186 @@ def gerar_diagnostico_comercial_vendedor(vendedor_id, ano, mes, loja=None, top_n
     return recomendacoes
 
 
+def get_comparativo_produtos_lojas(ano, mes):
+    """KPIs de portfólio de produto lado a lado para CADA loja (faturamento, SKUs/
+    fornecedores/marcas distintos, ticket médio por item, concentração top5/top10) —
+    a base do comparativo Loja x Loja em Vendas por Produto. Uma linha por loja
+    (reaproveita get_resumo_produtos_mes/get_concentracao_portfolio, já cacheados)."""
+    linhas = []
+    for loja_nome in LOJAS:
+        resumo = get_resumo_produtos_mes(ano, mes, loja=loja_nome)
+        concentracao = get_concentracao_portfolio(ano, mes, loja=loja_nome)
+        linhas.append({
+            "loja": loja_nome,
+            "faturamento_total": resumo["faturamento_total"],
+            "qtd_total": resumo["qtd_total"],
+            "ticket_medio_item": resumo["ticket_medio_item"],
+            "n_produtos": resumo["n_produtos"],
+            "n_fornecedores": resumo["n_fornecedores"],
+            "n_marcas": resumo["n_marcas"],
+            "top5_pct": concentracao["top5_pct"],
+            "top10_pct": concentracao["top10_pct"],
+        })
+    return pd.DataFrame(linhas)
+
+
+@cache_leitura()
+def get_sortimento_entre_lojas(ano, mes):
+    """Compara o SORTIMENTO de produtos vendido em cada loja no mês: pra cada
+    produto, quanto vendeu em cada loja, e um status — 'Comum' (vendeu nas duas),
+    'Só <loja>' (exclusivo de uma) ou 'Nenhuma' (não deveria acontecer, so' por
+    segurança). Sinaliza gaps de sortimento — um produto forte numa loja que a
+    outra nem oferece — e é a base pros alertas de comparação entre lojas."""
+    ini = date(ano, mes, 1)
+    fim = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    query = """
+        SELECT vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor,
+               COALESCE(vp.loja, v.loja) AS loja, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp
+        JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.data BETWEEN :ini AND :fim
+        GROUP BY vp.cod_produto, vp.descricao_produto, vp.marca, vp.fornecedor, COALESCE(vp.loja, v.loja)
+    """
+    cols = ["cod_produto", "descricao_produto", "marca", "fornecedor"] + LOJAS + ["status"]
+    df = _com_retry_deadlock(
+        lambda: pd.read_sql_query(text(query), get_engine(), params={"ini": ini, "fim": fim})
+    )
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df["valor_total"] = df["valor_total"].astype(float)
+
+    pivot = df.pivot_table(
+        index=["cod_produto", "descricao_produto", "marca", "fornecedor"],
+        columns="loja", values="valor_total", aggfunc="sum", fill_value=0.0,
+    ).reset_index()
+    for loja_nome in LOJAS:
+        if loja_nome not in pivot.columns:
+            pivot[loja_nome] = 0.0
+
+    def _status(row):
+        presentes = [loja_nome for loja_nome in LOJAS if row[loja_nome] > 0]
+        if len(presentes) == len(LOJAS):
+            return "Comum"
+        elif len(presentes) == 1:
+            return f"Só {presentes[0]}"
+        return "Nenhuma"
+
+    pivot["status"] = pivot.apply(_status, axis=1)
+    return pivot[cols]
+
+
+def gerar_alertas_comparativo_lojas(
+    ano, mes, limiar_concentracao_diff=15.0, limiar_crescimento_diff=20.0,
+    limiar_sortimento_valor=1000.0, limiar_skus_diff_pct=30.0,
+):
+    """Gera sinais de alerta (🔴 crítico / 🟡 atenção) comparando o portfólio de
+    produtos das DUAS lojas no mês — mesmo padrão (icone, texto) da Central de
+    Alertas do topo do painel. 100% baseado em regras determinísticas sobre os
+    indicadores já calculados (sem IA): disparidade de concentração de portfólio,
+    disparidade de crescimento (MoM) do faturamento em produtos, disparidade de
+    amplitude de sortimento (SKUs distintos), disparidade de ticket médio por
+    item, e produtos fortes exclusivos de uma loja que a outra nem oferece —
+    sinais pra decisão comercial (padronizar compras, replicar mix vencedor,
+    revisar fornecedor, etc.)."""
+    alertas = []
+    comparativo = get_comparativo_produtos_lojas(ano, mes)
+    if len(comparativo) < 2 or comparativo["faturamento_total"].sum() <= 0:
+        return alertas
+
+    linha = {row["loja"]: row for _, row in comparativo.iterrows()}
+    lojas_validas = [l for l in LOJAS if l in linha and linha[l]["faturamento_total"] > 0]
+    if len(lojas_validas) != 2:
+        return alertas
+    a, b = lojas_validas[0], lojas_validas[1]
+    linha_a, linha_b = linha[a], linha[b]
+
+    # Concentração de portfólio
+    if pd.notna(linha_a["top5_pct"]) and pd.notna(linha_b["top5_pct"]):
+        diff_conc = linha_a["top5_pct"] - linha_b["top5_pct"]
+        if abs(diff_conc) >= limiar_concentracao_diff:
+            loja_mais, loja_menos = (a, b) if diff_conc > 0 else (b, a)
+            alertas.append((
+                "🟡",
+                f"**{loja_mais}** está com concentração de portfólio bem mais alta que "
+                f"**{loja_menos}** ({linha[loja_mais]['top5_pct']:.0f}% vs "
+                f"{linha[loja_menos]['top5_pct']:.0f}% do faturamento nos top 5 SKUs) — maior "
+                f"risco de depender de poucos produtos/fornecedores nessa loja."
+            ))
+
+    # Crescimento MoM do faturamento em produtos
+    ano_ant, mes_ant = mes_anterior(ano, mes)
+    crescimento = {}
+    for loja_nome in lojas_validas:
+        atual = linha[loja_nome]["faturamento_total"]
+        anterior = get_resumo_produtos_mes(ano_ant, mes_ant, loja=loja_nome)["faturamento_total"]
+        crescimento[loja_nome] = ((atual - anterior) / anterior * 100) if anterior > 0 else None
+
+    cresc_a, cresc_b = crescimento.get(a), crescimento.get(b)
+    if cresc_a is not None and cresc_b is not None:
+        diff_cresc = cresc_a - cresc_b
+        if abs(diff_cresc) >= limiar_crescimento_diff:
+            loja_alta, loja_baixa = (a, b) if diff_cresc > 0 else (b, a)
+            icone_cresc = "🔴" if crescimento[loja_baixa] < 0 else "🟡"
+            alertas.append((
+                icone_cresc,
+                f"Faturamento em produtos de **{loja_alta}** variou "
+                f"{crescimento[loja_alta]:+.0f}% vs o mês anterior, enquanto **{loja_baixa}** "
+                f"teve {crescimento[loja_baixa]:+.0f}% — vale investigar o que está diferente "
+                "entre as lojas (sortimento, fornecedor, equipe)."
+            ))
+
+    # Amplitude de sortimento (SKUs distintos)
+    maior_skus = max(linha_a["n_produtos"], linha_b["n_produtos"])
+    if maior_skus > 0:
+        diff_skus_pct = abs(linha_a["n_produtos"] - linha_b["n_produtos"]) / maior_skus * 100
+        if diff_skus_pct >= limiar_skus_diff_pct:
+            loja_mais_skus = a if linha_a["n_produtos"] > linha_b["n_produtos"] else b
+            loja_menos_skus = b if loja_mais_skus == a else a
+            alertas.append((
+                "🟡",
+                f"**{loja_mais_skus}** vendeu {int(linha[loja_mais_skus]['n_produtos'])} SKUs "
+                f"distintos no mês, contra só {int(linha[loja_menos_skus]['n_produtos'])} em "
+                f"**{loja_menos_skus}** ({diff_skus_pct:.0f}% de diferença) — portfólio bem mais "
+                f"raso em {loja_menos_skus}, oportunidade de ampliar o mix ofertado lá."
+            ))
+
+    # Ticket médio por item
+    if linha_a["ticket_medio_item"] > 0 and linha_b["ticket_medio_item"] > 0:
+        diff_ticket_pct = (
+            (linha_a["ticket_medio_item"] - linha_b["ticket_medio_item"])
+            / linha_b["ticket_medio_item"] * 100
+        )
+        if abs(diff_ticket_pct) >= 30:
+            loja_maior_ticket = a if diff_ticket_pct > 0 else b
+            loja_menor_ticket = b if loja_maior_ticket == a else a
+            alertas.append((
+                "🟡",
+                f"Ticket médio por item de **{loja_maior_ticket}** "
+                f"({formatar_moeda(linha[loja_maior_ticket]['ticket_medio_item'])}) está bem "
+                f"acima de **{loja_menor_ticket}** "
+                f"({formatar_moeda(linha[loja_menor_ticket]['ticket_medio_item'])}) — pode ser "
+                "mix de produto diferente (itens de maior valor) ou oportunidade de precificação."
+            ))
+
+    # Produtos fortes exclusivos de uma loja (gap de sortimento)
+    sortimento = get_sortimento_entre_lojas(ano, mes)
+    if not sortimento.empty:
+        for loja_nome in lojas_validas:
+            outra_loja = b if loja_nome == a else a
+            exclusivos = sortimento[
+                (sortimento["status"] == f"Só {loja_nome}") & (sortimento[loja_nome] >= limiar_sortimento_valor)
+            ].sort_values(loja_nome, ascending=False)
+            for _, item in exclusivos.head(2).iterrows():
+                alertas.append((
+                    "🟡",
+                    f"**{item['descricao_produto']}** vendeu {formatar_moeda(item[loja_nome])} em "
+                    f"**{loja_nome}** e nada em **{outra_loja}** — avaliar se vale levar esse "
+                    "produto/fornecedor pra lá também."
+                ))
+
+    return alertas
+
+
 @cache_leitura()
 def get_produtos_novos_e_parados(ano, mes, loja=None, janela_meses=3):
     """Compara o portfólio vendido no mês com o portfólio vendido na JANELA de meses
