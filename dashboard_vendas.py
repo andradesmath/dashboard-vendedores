@@ -3114,3 +3114,31 @@ with tab_dashboard:
                 "⬇️ Baixar PDFs de todos os vendedores (.zip)", data=zip_bytes, file_name=nome_zip,
                 mime="application/zip",
             )
+
+    st.markdown("---")
+
+    # ---- Relatório Estratégico por Loja ----
+    st.markdown("### 🧭 Relatório Estratégico Comercial por Loja")
+    st.caption(
+        "PDF com diagnóstico completo de uma loja: indicadores do mês, situações a trabalhar, "
+        "vendedores em risco de desempenho (com indicativo de quando avaliar substituição), "
+        "concentração de portfólio por vendedor e um plano de ação para os próximos 3 meses."
+    )
+
+    loja_estrategico = st.selectbox("Loja", db.LOJAS, key="sel_loja_estrategico")
+    try:
+        pdf_estrategico_bytes = pdf_export.gerar_pdf_estrategico_loja(
+            loja_estrategico, ano_filtro, mes_filtro, dias_uteis_total,
+        )
+        nome_pdf_estrategico = (
+            f"Relatorio_Estrategico_{loja_estrategico.replace(' ', '_')}_"
+            f"{db.MESES_PT[mes_filtro]}_{ano_filtro}.pdf"
+        )
+        st.download_button(
+            "⬇️ Baixar Relatório Estratégico (PDF)", data=pdf_estrategico_bytes,
+            file_name=nome_pdf_estrategico, mime="application/pdf",
+            key="dl_pdf_estrategico",
+        )
+    except Exception as e:
+        st.error("Não foi possível gerar o relatório estratégico da loja.")
+        st.exception(e)

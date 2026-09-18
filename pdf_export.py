@@ -10,6 +10,7 @@ pedidos, ticket médio individual) e um gráfico de barras com o
 realizado diário no período.
 """
 import io
+import re
 from datetime import datetime
 
 import numpy as np
@@ -31,6 +32,14 @@ import db
 AZUL = colors.HexColor("#1a5276")
 VERDE = colors.HexColor("#1e8449")
 CINZA = colors.HexColor("#555555")
+
+
+def _md_para_reportlab(texto):
+    """Converte negrito estilo Markdown (**texto**) pro markup que o Paragraph do
+    reportlab entende (<b>texto</b>) — as recomendações em texto são escritas com
+    **negrito** pensando na renderização em Markdown do Streamlit, e reaproveitadas
+    aqui nos PDFs."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", texto)
 
 
 def _calcular_kpis_vendedor(vendedor_id, ano, mes, dias_uteis_total=None):
@@ -450,6 +459,26 @@ def gerar_pdf_vendedor(vendedor_id, nome, loja, ano, mes, dias_uteis_total=None)
         elementos.append(Spacer(1, 0.5 * cm))
         elementos.append(Paragraph("Nenhum lançamento de vendas registrado no período.", styles["Normal"]))
 
+    try:
+        diagnostico_comercial = db.gerar_diagnostico_comercial_vendedor(vendedor_id, ano, mes, loja=loja)
+    except Exception:
+        diagnostico_comercial = []
+
+    if diagnostico_comercial:
+        elementos.append(Spacer(1, 0.3 * cm))
+        elementos.append(Paragraph("Diagnóstico Comercial — Indicativos de Desenvolvimento", secao_style))
+        elementos.append(Spacer(1, 0.2 * cm))
+        elementos.append(Paragraph(
+            "Comparação automática com os colegas ativos da mesma loja: concentração de "
+            "portfólio de produtos vs. a média do grupo, e os produtos/fornecedores que os "
+            "colegas vendem bem e este vendedor vende pouco ou nada.",
+            sub_style,
+        ))
+        elementos.append(Spacer(1, 0.15 * cm))
+        for rec in diagnostico_comercial:
+            elementos.append(Paragraph(f"• {_md_para_reportlab(rec)}", styles["Normal"]))
+            elementos.append(Spacer(1, 0.1 * cm))
+
     elementos.append(Spacer(1, 0.8 * cm))
     elementos.append(HRFlowable(width="100%", color=colors.lightgrey, thickness=0.5))
     elementos.append(Spacer(1, 0.2 * cm))
@@ -759,6 +788,207 @@ def gerar_pdf_mix_produtos(ano, mes, loja=None, vendedor_id=None, rotulo_escopo=
             "Sem % quando o produto não vendeu no período de comparação.",
             sub_style,
         ))
+
+    elementos.append(Spacer(1, 0.8 * cm))
+    elementos.append(HRFlowable(width="100%", color=colors.lightgrey, thickness=0.5))
+    elementos.append(Spacer(1, 0.2 * cm))
+    elementos.append(Paragraph(
+        f"Relatório gerado automaticamente em {datetime.now().strftime('%d/%m/%Y às %H:%M')}.",
+        sub_style,
+    ))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Relatório Estratégico Comercial por Loja
+# ---------------------------------------------------------------------------
+
+def _tabela_padrao(dados, col_widths, fonte=9):
+    """Monta uma Table com o mesmo estilo visual usado em todo o arquivo (cabeçalho
+    azul, linhas zebradas) — evita repetir o TableStyle inteiro em cada seção nova."""
+    tabela = Table(dados, colWidths=col_widths)
+    tabela.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), fonte),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tabela
+
+
+def gerar_pdf_estrategico_loja(loja, ano, mes, dias_uteis_total=None):
+    """Gera o Relatório Estratégico Comercial de UMA loja: indicadores do mês
+    (com comparativo MoM/YoY), situações a trabalhar (ritmo de meta por vendedor +
+    comparativo com a outra loja), vendedores em risco de desempenho (com o
+    indicativo de quando uma substituição passaria a fazer sentido), diagnóstico
+    de concentração de portfólio por vendedor, e um PLANO DE AÇÃO pros próximos 3
+    meses — tudo derivado dos indicadores já calculados no painel, sem IA gerando
+    texto solto. Retorna os bytes do PDF."""
+    dias_uteis_total = dias_uteis_total or db.dias_uteis_no_mes(ano, mes)
+    dias_transcorridos = db.dias_uteis_transcorridos(ano, mes, dias_uteis_total)
+    ano_ant, mes_ant = db.mes_anterior(ano, mes)
+
+    totais_atual = db.get_totais_mes(ano, mes, loja=loja)
+    totais_mes_anterior = db.get_totais_mes(ano_ant, mes_ant, loja=loja)
+    totais_ano_anterior = db.get_totais_mes(ano - 1, mes, loja=loja)
+
+    meta = totais_atual["meta"]
+    realizado = totais_atual["realizado"]
+    pedidos = totais_atual["pedidos"]
+    atingimento = (realizado / meta * 100) if meta > 0 else 0.0
+    projecao = (realizado / dias_transcorridos * dias_uteis_total) if dias_transcorridos > 0 else realizado
+    ticket_medio = (realizado / pedidos) if pedidos > 0 else 0.0
+
+    def _crescimento(atual_v, anterior_v):
+        return ((atual_v - anterior_v) / anterior_v * 100) if anterior_v > 0 else None
+
+    def _fmt_cresc(v):
+        return "sem dado no período anterior" if v is None else f"{'+' if v >= 0 else ''}{v:.1f}%"
+
+    cresc_mom = _crescimento(realizado, totais_mes_anterior["realizado"])
+    cresc_yoy = _crescimento(realizado, totais_ano_anterior["realizado"])
+
+    resumo_prod = db.get_resumo_produtos_mes(ano, mes, loja=loja)
+    concentracao_prod = db.get_concentracao_portfolio(ano, mes, loja=loja)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, topMargin=1.6 * cm, bottomMargin=1.6 * cm,
+        leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+    )
+    styles = getSampleStyleSheet()
+    titulo_style = ParagraphStyle("titulo", parent=styles["Heading1"], textColor=AZUL, spaceAfter=2)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], textColor=CINZA)
+    secao_style = ParagraphStyle("secao", parent=styles["Heading3"], textColor=AZUL, spaceBefore=10)
+    destaque_style = ParagraphStyle("destaque", parent=styles["Heading2"], textColor=VERDE, spaceBefore=10)
+
+    elementos = []
+    elementos.append(Paragraph("Relatório Estratégico Comercial", titulo_style))
+    elementos.append(Paragraph(loja, styles["Heading2"]))
+    elementos.append(Paragraph(f"Período de referência: {db.MESES_PT[mes]}/{ano}", sub_style))
+    elementos.append(Spacer(1, 0.4 * cm))
+    elementos.append(HRFlowable(width="100%", color=AZUL, thickness=1.2))
+    elementos.append(Spacer(1, 0.5 * cm))
+
+    # ---- Indicadores do mês ----
+    dados_kpi = [
+        ["Indicador", "Valor"],
+        ["Meta do mês", db.formatar_moeda(meta)],
+        ["Realizado do mês", db.formatar_moeda(realizado)],
+        ["Atingimento da meta (%)", f"{atingimento:.1f}% ({db.label_semaforo(atingimento)})"],
+        ["Projeção de fechamento", db.formatar_moeda(projecao)],
+        ["Pedidos no mês", str(pedidos)],
+        ["Ticket médio", db.formatar_moeda(ticket_medio)],
+        [f"vs. {db.MESES_PT[mes_ant]}/{ano_ant} (realizado)", _fmt_cresc(cresc_mom)],
+        [f"vs. {db.MESES_PT[mes]}/{ano - 1} (realizado)", _fmt_cresc(cresc_yoy)],
+        ["Faturamento em produtos", db.formatar_moeda(resumo_prod["faturamento_total"])],
+        ["SKUs distintos vendidos", str(resumo_prod["n_produtos"])],
+        [
+            "Concentração top 5 SKUs",
+            f"{concentracao_prod['top5_pct']:.1f}%" if concentracao_prod["top5_pct"] is not None else "—",
+        ],
+    ]
+    elementos.append(_tabela_padrao(dados_kpi, [9 * cm, 7 * cm]))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    # ---- Situações a trabalhar (ritmo de meta por vendedor + comparativo entre lojas) ----
+    elementos.append(Paragraph("Situações a Trabalhar", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    situacoes = []
+    try:
+        indicadores_loja = db.get_indicadores_vendedores_mes(ano, mes, loja=loja)
+        if not indicadores_loja.empty and dias_transcorridos > 0:
+            for row in indicadores_loja.itertuples():
+                if row.valor_meta > 0:
+                    projecao_vend = row.realizado / dias_transcorridos * dias_uteis_total
+                    projecao_pct_vend = projecao_vend / row.valor_meta * 100
+                    if projecao_pct_vend < 70:
+                        situacoes.append(
+                            f"{row.nome}: no ritmo atual, fecha o mês em {projecao_pct_vend:.0f}% da "
+                            f"meta (projeção {db.formatar_moeda(projecao_vend)} de "
+                            f"{db.formatar_moeda(row.valor_meta)})."
+                        )
+    except Exception:
+        pass
+    try:
+        for _, texto_alerta in db.gerar_alertas_comparativo_lojas(ano, mes):
+            situacoes.append(texto_alerta)
+    except Exception:
+        pass
+
+    if not situacoes:
+        elementos.append(Paragraph("Nenhuma situação crítica identificada neste período.", styles["Normal"]))
+    else:
+        for situacao in situacoes:
+            elementos.append(Paragraph(f"• {_md_para_reportlab(situacao)}", styles["Normal"]))
+            elementos.append(Spacer(1, 0.1 * cm))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    # ---- Vendedores em atenção / risco de desempenho ----
+    elementos.append(Paragraph("Vendedores em Atenção — Risco de Desempenho", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    elementos.append(Paragraph(
+        "Sinal construído a partir de todo o histórico do vendedor somado à projeção do mês "
+        "corrente — NÃO é uma decisão automática de desligamento, serve como gatilho pra um "
+        "plano de ação (30/60/90 dias) antes de qualquer decisão sobre o vendedor.",
+        sub_style,
+    ))
+    elementos.append(Spacer(1, 0.15 * cm))
+    try:
+        atencao_df = db.get_vendedores_em_atencao(ano, mes, loja=loja, dias_uteis_total=dias_uteis_total)
+    except Exception:
+        atencao_df = pd.DataFrame()
+    if atencao_df.empty:
+        elementos.append(Paragraph("Sem histórico suficiente para calcular os sinais.", styles["Normal"]))
+    else:
+        dados_atencao = [["Vendedor", "Zona", "Sinais", "Atingimento Atual (Proj.)"]]
+        for _, r in atencao_df.iterrows():
+            dados_atencao.append([
+                r["nome"], r["zona"], str(int(r["criterios_atendidos"])),
+                f"{r['atingimento_atual_proj']:.1f}%",
+            ])
+        elementos.append(_tabela_padrao(dados_atencao, [5.5 * cm, 3.5 * cm, 2 * cm, 5 * cm]))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    # ---- Concentração de portfólio por vendedor ----
+    elementos.append(Paragraph("Concentração de Portfólio por Vendedor", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    try:
+        conc_vend_df = db.get_comparativo_concentracao_vendedores(ano, mes, loja=loja)
+    except Exception:
+        conc_vend_df = pd.DataFrame()
+    if conc_vend_df.empty:
+        elementos.append(Paragraph("Sem dado de produto suficiente para este comparativo.", styles["Normal"]))
+    else:
+        dados_conc = [["Vendedor", "Top 5", "Top 10", "Risco"]]
+        for _, r in conc_vend_df.iterrows():
+            dados_conc.append([
+                r["nome"],
+                f"{r['top5_pct']:.1f}%" if pd.notna(r["top5_pct"]) else "—",
+                f"{r['top10_pct']:.1f}%" if pd.notna(r["top10_pct"]) else "—",
+                r["classificacao"],
+            ])
+        elementos.append(_tabela_padrao(dados_conc, [6 * cm, 3 * cm, 3 * cm, 4 * cm]))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    # ---- Plano de Ação — Próximos 3 Meses ----
+    elementos.append(Paragraph("Plano de Ação — Próximos 3 Meses", destaque_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    try:
+        plano = db.gerar_plano_acao_loja(loja, ano, mes, dias_uteis_total=dias_uteis_total)
+    except Exception as e_plano:
+        plano = [f"Não foi possível montar o plano de ação automaticamente ({e_plano})."]
+    for item in plano:
+        elementos.append(Paragraph(f"• {_md_para_reportlab(item)}", styles["Normal"]))
+        elementos.append(Spacer(1, 0.15 * cm))
 
     elementos.append(Spacer(1, 0.8 * cm))
     elementos.append(HRFlowable(width="100%", color=colors.lightgrey, thickness=0.5))

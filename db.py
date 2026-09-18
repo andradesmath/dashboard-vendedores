@@ -16,6 +16,7 @@ import os
 import calendar
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
 
@@ -2353,6 +2354,208 @@ def gerar_alertas_comparativo_lojas(
                 ))
 
     return alertas
+
+
+# Limiares do sinal de risco de desempenho por vendedor — espelham exatamente os
+# usados na seção "⚠️ Vendedores em Atenção" do dashboard (mantidos como constantes
+# nomeadas aqui pra reaproveitar a mesma régua no relatório estratégico por loja em
+# PDF, sem duplicar números "soltos" no meio da lógica).
+LIMIAR_ATENCAO_CRITICO = 70.0
+LIMIAR_ATENCAO_ATUAL_CRITICO = 60.0
+LIMIAR_ATENCAO_CV_ALTO = 40.0
+LIMIAR_ATENCAO_MEDIA_BAIXA = 85.0
+LIMIAR_ATENCAO_SLOPE_NEGATIVO = -2.0
+
+
+def get_vendedores_em_atencao(ano, mes, loja=None, dias_uteis_total=None):
+    """Sinal de risco de desempenho por vendedor, construído a partir de TODO o
+    histórico (todos os meses com meta lançada) somado à projeção do mês corrente
+    — mesma régua da seção "⚠️ Vendedores em Atenção" do dashboard, disponível
+    aqui pra reaproveitar no relatório estratégico por loja (PDF). NÃO é uma
+    decisão automática de desligamento — é um gatilho pra plano de ação (30/60/90
+    dias) antes de qualquer decisão sobre o vendedor.
+
+    Critérios (cada um soma 1 ponto; 3-4 pontos = 🔴 Crítico, 1-2 = 🟡 Atenção,
+    0 = 🟢 Ok): Persistência = pelo menos 2 dos últimos 3 meses do histórico
+    (excluindo o mês atual) abaixo de 70% de atingimento • Tendência = inclinação
+    negativa (< -2 pp/mês) na regressão linear sobre todo o histórico • Mês Atual
+    Crítico = atingimento projetado do mês corrente abaixo de 60% • Consistência
+    = alta variação do atingimento mês a mês (CV > 40%) combinada com média
+    histórica abaixo de 85%. Vendedores com menos de 3 meses de histórico só são
+    avaliados pelo critério do Mês Atual (evita punir quem é novo por falta de
+    histórico)."""
+    dias_uteis_total = dias_uteis_total or dias_uteis_no_mes(ano, mes)
+    dias_transcorridos = dias_uteis_transcorridos(ano, mes, dias_uteis_total)
+
+    cols = [
+        "vendedor_id", "nome", "loja", "zona", "criterios_atendidos", "n_meses_hist",
+        "atingimento_atual_proj", "slope_hist", "cv_hist",
+        "persistencia", "tendencia", "atual_critico", "consistencia",
+    ]
+    indicadores_atual = get_indicadores_vendedores_mes(ano, mes, loja=loja)
+    historico_full = get_historico_meta_realizado(loja=loja)
+    if indicadores_atual.empty or historico_full.empty:
+        return pd.DataFrame(columns=cols)
+
+    linhas = []
+    for row in indicadores_atual.itertuples():
+        hist_vend = historico_full[historico_full["vendedor_id"] == row.vendedor_id].copy()
+        hist_vend = hist_vend[hist_vend["valor_meta"] > 0]
+        hist_vend["atingimento_pct"] = hist_vend["realizado"] / hist_vend["valor_meta"] * 100
+        hist_vend = hist_vend.sort_values(["ano", "mes"])
+        n_meses_hist = len(hist_vend)
+
+        if dias_transcorridos > 0 and dias_transcorridos < dias_uteis_total and row.realizado > 0 and row.valor_meta > 0:
+            atingimento_atual_proj = (
+                (row.realizado / dias_transcorridos * dias_uteis_total) / row.valor_meta * 100
+            )
+        else:
+            atingimento_atual_proj = row.atingimento_pct
+
+        hist_sem_atual = hist_vend[~((hist_vend["ano"] == ano) & (hist_vend["mes"] == mes))]
+        ultimos_3 = hist_sem_atual.tail(3)
+        n_ultimos_3 = len(ultimos_3)
+        n_criticos_ultimos_3 = int((ultimos_3["atingimento_pct"] < LIMIAR_ATENCAO_CRITICO).sum())
+        criterio_persistencia = n_ultimos_3 >= 2 and n_criticos_ultimos_3 >= 2
+
+        if len(hist_sem_atual) >= 3:
+            xs = np.arange(len(hist_sem_atual), dtype=float)
+            ys = hist_sem_atual["atingimento_pct"].to_numpy(dtype=float)
+            slope_hist = float(np.polyfit(xs, ys, 1)[0])
+            media_hist = float(hist_sem_atual["atingimento_pct"].mean())
+            std_hist = float(hist_sem_atual["atingimento_pct"].std(ddof=0))
+            cv_hist = (std_hist / media_hist * 100) if media_hist > 0 else None
+        else:
+            slope_hist, media_hist, cv_hist = None, None, None
+
+        criterio_tendencia = slope_hist is not None and slope_hist < LIMIAR_ATENCAO_SLOPE_NEGATIVO
+        criterio_atual = row.valor_meta > 0 and atingimento_atual_proj < LIMIAR_ATENCAO_ATUAL_CRITICO
+        criterio_consistencia = (
+            cv_hist is not None and media_hist is not None
+            and cv_hist > LIMIAR_ATENCAO_CV_ALTO and media_hist < LIMIAR_ATENCAO_MEDIA_BAIXA
+        )
+
+        criterios_atendidos = sum(
+            [criterio_persistencia, criterio_tendencia, criterio_atual, criterio_consistencia]
+        )
+        if criterios_atendidos >= 3:
+            zona = "🔴 Crítico"
+        elif criterios_atendidos >= 1:
+            zona = "🟡 Atenção"
+        else:
+            zona = "🟢 Ok"
+
+        linhas.append({
+            "vendedor_id": row.vendedor_id, "nome": row.nome, "loja": row.loja, "zona": zona,
+            "criterios_atendidos": criterios_atendidos, "n_meses_hist": n_meses_hist,
+            "atingimento_atual_proj": atingimento_atual_proj, "slope_hist": slope_hist, "cv_hist": cv_hist,
+            "persistencia": criterio_persistencia, "tendencia": criterio_tendencia,
+            "atual_critico": criterio_atual, "consistencia": criterio_consistencia,
+        })
+
+    df = pd.DataFrame(linhas)
+    ordem_zona = {"🔴 Crítico": 0, "🟡 Atenção": 1, "🟢 Ok": 2}
+    df["ordem"] = df["zona"].map(ordem_zona)
+    df = df.sort_values(["ordem", "criterios_atendidos"], ascending=[True, False]).drop(columns=["ordem"])
+    return df.reset_index(drop=True)
+
+
+def gerar_plano_acao_loja(loja, ano, mes, dias_uteis_total=None, top_n_oportunidades=3):
+    """Monta uma lista de recomendações estratégicas (linguagem natural) pros
+    PRÓXIMOS 3 MESES de uma loja: quem precisa de plano de ação de desempenho (ou
+    de uma decisão mais dura, se o critério bater), risco de concentração do
+    portfólio da loja, queda de faturamento em produtos, e gaps de sortimento vs.
+    a outra loja. 100% baseado em regras determinísticas sobre os indicadores já
+    calculados (sem IA) — cada recomendação cita o número que a gerou."""
+    dias_uteis_total = dias_uteis_total or dias_uteis_no_mes(ano, mes)
+    ano_ant, mes_ant = mes_anterior(ano, mes)
+    meses_alvo = []
+    a_m, m_m = ano, mes
+    for _ in range(3):
+        a_m, m_m = (a_m, m_m + 1) if m_m < 12 else (a_m + 1, 1)
+        meses_alvo.append(f"{MESES_PT[m_m]}/{a_m}")
+
+    plano = []
+
+    # 1) Vendedores em risco de desempenho
+    atencao = get_vendedores_em_atencao(ano, mes, loja=loja, dias_uteis_total=dias_uteis_total)
+    criticos = atencao[atencao["zona"] == "🔴 Crítico"] if not atencao.empty else atencao
+    em_atencao = atencao[atencao["zona"] == "🟡 Atenção"] if not atencao.empty else atencao
+
+    if not criticos.empty:
+        nomes_criticos = ", ".join(criticos["nome"].tolist())
+        plano.append(
+            f"🔴 **Desempenho crítico**: {nomes_criticos} — {'atende' if len(criticos) == 1 else 'atendem'} "
+            f"3 ou mais sinais de risco (persistência abaixo da meta, tendência de queda, mês atual "
+            f"crítico e/ou baixa consistência). Iniciar plano de ação formal de 30/60/90 dias até "
+            f"{meses_alvo[0]}, com metas intermediárias claras; se não houver melhora sustentada até "
+            f"{meses_alvo[2]}, avaliar substituição do(s) vendedor(es)."
+        )
+    if not em_atencao.empty:
+        nomes_atencao = ", ".join(em_atencao["nome"].tolist())
+        plano.append(
+            f"🟡 **Acompanhamento próximo**: {nomes_atencao} — sinal(is) de queda/instabilidade "
+            f"isolado(s), ainda sem gravidade pra plano formal. Reforçar acompanhamento semanal nos "
+            f"próximos 3 meses ({', '.join(meses_alvo)}) e reavaliar zona no fechamento de cada mês."
+        )
+    if criticos.empty and em_atencao.empty and not atencao.empty:
+        plano.append("🟢 Nenhum vendedor em zona de atenção ou crítica — manter o acompanhamento de rotina.")
+
+    # 2) Concentração de portfólio da loja
+    concentracao_loja = get_concentracao_portfolio(ano, mes, loja=loja)
+    if concentracao_loja["top5_pct"] is not None:
+        if concentracao_loja["top5_pct"] >= CONCENTRACAO_LIMIAR_ALTA:
+            plano.append(
+                f"📦 **Concentração de portfólio alta** ({concentracao_loja['top5_pct']:.0f}% do "
+                f"faturamento em produtos nos top 5 SKUs): negociar condições/estoque de segurança "
+                f"com os fornecedores desses produtos e diversificar o mix ofertado ao longo dos "
+                f"próximos 3 meses ({', '.join(meses_alvo)}), reduzindo a dependência."
+            )
+        elif concentracao_loja["top5_pct"] <= CONCENTRACAO_LIMIAR_MODERADA:
+            plano.append(
+                f"🟢 Portfólio diversificado ({concentracao_loja['top5_pct']:.0f}% nos top 5 SKUs) — "
+                "manter a estratégia de mix amplo."
+            )
+
+    # 3) Crescimento do faturamento em produtos (MoM)
+    atual_prod = get_resumo_produtos_mes(ano, mes, loja=loja)["faturamento_total"]
+    anterior_prod = get_resumo_produtos_mes(ano_ant, mes_ant, loja=loja)["faturamento_total"]
+    if anterior_prod > 0:
+        cresc_prod = (atual_prod - anterior_prod) / anterior_prod * 100
+        if cresc_prod <= -10:
+            plano.append(
+                f"📉 Faturamento em produtos caiu {cresc_prod:.0f}% vs. o mês anterior — investigar "
+                "causa (sortimento, ruptura de estoque, concorrência, equipe) e definir ação "
+                f"corretiva já no início de {meses_alvo[0]}."
+            )
+
+    # 4) Gap de sortimento vs. a outra loja
+    outras_lojas = [l for l in LOJAS if l != loja]
+    if outras_lojas:
+        sortimento = get_sortimento_entre_lojas(ano, mes)
+        if not sortimento.empty:
+            gap = sortimento[
+                (sortimento["status"].isin([f"Só {l}" for l in outras_lojas]))
+            ].copy()
+            if not gap.empty:
+                gap["valor_outra"] = gap[outras_lojas].sum(axis=1)
+                gap = gap[gap["valor_outra"] >= 500].sort_values("valor_outra", ascending=False)
+                if not gap.empty:
+                    itens_gap = "; ".join(
+                        f"{r['descricao_produto']} ({formatar_moeda(r['valor_outra'])})"
+                        for _, r in gap.head(top_n_oportunidades).iterrows()
+                    )
+                    plano.append(
+                        f"🔍 **Gap de sortimento**: {itens_gap} — vendem bem em "
+                        f"{' / '.join(outras_lojas)} e nada aqui. Avaliar inclusão desses produtos/"
+                        "fornecedores no mix desta loja nos próximos meses."
+                    )
+
+    plano.append(
+        f"📅 Revisar todos esses indicadores mensalmente ao longo de {', '.join(meses_alvo)} e "
+        "ajustar o plano conforme o resultado de cada mês."
+    )
+    return plano
 
 
 @cache_leitura()
