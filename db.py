@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
 
 # Carrega variáveis de um arquivo .env local, se existir (não falha se python-dotenv
 # não estiver instalado ou o arquivo não existir).
@@ -2721,6 +2721,186 @@ def get_vendedores_por_produto(cod_produto, ano, mes, loja=None):
         df["qtd_total"] = df["qtd_total"].astype(float)
         df["valor_total"] = df["valor_total"].astype(float)
     return df
+
+
+@cache_leitura()
+def get_serie_produtos_multi(cods_produtos, loja=None, meses=12):
+    """Série MENSAL (valor_total, qtd_total) de uma LISTA de produtos, uma linha
+    por produto x mês — base do comparativo multi-produto do drill-down (gráfico
+    com uma cor por produto, KPIs individuais e somatório). Generaliza
+    `get_serie_produto` pra N produtos de uma vez só, evitando N idas ao banco."""
+    cods_produtos = list(dict.fromkeys(cods_produtos))  # remove duplicatas preservando ordem
+    if not cods_produtos:
+        return pd.DataFrame(columns=["cod_produto", "descricao_produto", "ano", "mes", "valor_total", "qtd_total"])
+
+    hoje = date.today()
+    ano_ini, mes_ini = hoje.year, hoje.month
+    for _ in range(meses - 1):
+        ano_ini, mes_ini = mes_anterior(ano_ini, mes_ini)
+    ini = date(ano_ini, mes_ini, 1)
+
+    query_str = """
+        SELECT vp.cod_produto,
+               MAX(vp.descricao_produto) AS descricao_produto,
+               EXTRACT(YEAR FROM vp.data)::int AS ano, EXTRACT(MONTH FROM vp.data)::int AS mes,
+               SUM(vp.valor_total) AS valor_total, SUM(vp.qtd) AS qtd_total
+        FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.cod_produto IN :cods AND vp.data >= :ini
+    """
+    params = {"cods": cods_produtos, "ini": ini}
+    if loja and loja != "Ambas":
+        query_str += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query_str += " GROUP BY vp.cod_produto, 3, 4 ORDER BY vp.cod_produto, 3, 4"
+
+    query = text(query_str).bindparams(bindparam("cods", expanding=True))
+    df = pd.read_sql_query(query, get_engine(), params=params)
+    if not df.empty:
+        df["valor_total"] = df["valor_total"].astype(float)
+        df["qtd_total"] = df["qtd_total"].astype(float)
+    return df
+
+
+@cache_leitura()
+def get_vendedores_por_produtos_multi(cods_produtos, ano, mes, loja=None):
+    """Quem vendeu cada um de uma LISTA de produtos no mês, uma linha por
+    produto x vendedor — generaliza `get_vendedores_por_produto` pra N produtos.
+    O chamador agrupa por vendedor (somando os produtos) pra ver o ranking
+    combinado, ou usa o detalhamento produto a produto direto."""
+    cods_produtos = list(dict.fromkeys(cods_produtos))
+    if not cods_produtos:
+        return pd.DataFrame(columns=["cod_produto", "descricao_produto", "vendedor_id", "nome", "loja", "qtd_total", "valor_total"])
+
+    ini = date(ano, mes, 1)
+    fim = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    query_str = """
+        SELECT vp.cod_produto, MAX(vp.descricao_produto) AS descricao_produto,
+               vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja) AS loja,
+               SUM(vp.qtd) AS qtd_total, SUM(vp.valor_total) AS valor_total
+        FROM vendas_produtos_diarias vp JOIN vendedores v ON v.id = vp.vendedor_id
+        WHERE vp.cod_produto IN :cods AND vp.data BETWEEN :ini AND :fim
+    """
+    params = {"cods": cods_produtos, "ini": ini, "fim": fim}
+    if loja and loja != "Ambas":
+        query_str += " AND COALESCE(vp.loja, v.loja) = :loja"
+        params["loja"] = loja
+    query_str += """
+        GROUP BY vp.cod_produto, vp.vendedor_id, v.nome, COALESCE(vp.loja, v.loja)
+        ORDER BY vp.cod_produto, valor_total DESC
+    """
+    query = text(query_str).bindparams(bindparam("cods", expanding=True))
+    df = pd.read_sql_query(query, get_engine(), params=params)
+    if not df.empty:
+        df["qtd_total"] = df["qtd_total"].astype(float)
+        df["valor_total"] = df["valor_total"].astype(float)
+    return df
+
+
+def gerar_insights_comparativo_produtos(serie_multi_df, vendedores_multi_df=None, mes_referencia=None, ano_referencia=None):
+    """Gera insights 100% determinísticos (sem IA) comparando N produtos ao longo
+    do tempo: participação de cada um no total combinado, tendência individual
+    (mesma regra de inclinação usada no resto do painel), variação MoM relevante,
+    e concentração de vendedores no mês de referência. Toda frase é derivada de
+    valores já calculados a partir dos dados — nenhum texto é gerado por modelo
+    de linguagem, exatamente como o diagnóstico comercial por vendedor."""
+    if serie_multi_df is None or serie_multi_df.empty:
+        return ["Sem dado histórico suficiente pra gerar insights."]
+
+    insights = []
+    resumo = []
+    total_geral = 0.0
+    for cod in serie_multi_df["cod_produto"].unique():
+        sub = serie_multi_df[serie_multi_df["cod_produto"] == cod].sort_values(["ano", "mes"])
+        desc = sub["descricao_produto"].iloc[0]
+        total_prod = float(sub["valor_total"].sum())
+        media_prod = total_prod / len(sub) if len(sub) else 0.0
+        total_geral += total_prod
+
+        slope_pct = None
+        if len(sub) >= 3:
+            xs = np.arange(len(sub), dtype=float)
+            ys = sub["valor_total"].to_numpy(dtype=float)
+            slope = float(np.polyfit(xs, ys, 1)[0])
+            slope_pct = (slope / media_prod * 100) if media_prod > 0 else 0.0
+
+        cresc_mom = None
+        if len(sub) >= 2:
+            atual_v = float(sub["valor_total"].iloc[-1])
+            anterior_v = float(sub["valor_total"].iloc[-2])
+            if anterior_v > 0:
+                cresc_mom = (atual_v - anterior_v) / anterior_v * 100
+
+        resumo.append({
+            "cod": cod, "desc": desc, "total": total_prod, "media": media_prod,
+            "slope_pct": slope_pct, "cresc_mom": cresc_mom,
+        })
+
+    for r in resumo:
+        r["participacao_pct"] = (r["total"] / total_geral * 100) if total_geral > 0 else 0.0
+
+    insights.append(f"Faturamento combinado do conjunto no período: {formatar_moeda(total_geral)}.")
+
+    if len(resumo) >= 2:
+        maior = max(resumo, key=lambda r: r["total"])
+        menor = min(resumo, key=lambda r: r["total"])
+        insights.append(
+            f"**{maior['desc']}** é o principal produto do conjunto, respondendo por "
+            f"{maior['participacao_pct']:.1f}% do total combinado ({formatar_moeda(maior['total'])})."
+        )
+        if menor["cod"] != maior["cod"]:
+            insights.append(
+                f"**{menor['desc']}** é o de menor peso no conjunto, com {menor['participacao_pct']:.1f}% "
+                f"do total ({formatar_moeda(menor['total'])})."
+            )
+
+    for r in resumo:
+        if r["slope_pct"] is not None:
+            if r["slope_pct"] > 5:
+                insights.append(
+                    f"**{r['desc']}** está em tendência de alta (📈 inclinação média de "
+                    f"{r['slope_pct']:.1f}% ao mês no período analisado)."
+                )
+            elif r["slope_pct"] < -5:
+                insights.append(
+                    f"**{r['desc']}** está em tendência de queda (📉 inclinação média de "
+                    f"{r['slope_pct']:.1f}% ao mês) — vale investigar o motivo (ruptura de estoque, "
+                    f"concorrência, sazonalidade)."
+                )
+        if r["cresc_mom"] is not None and abs(r["cresc_mom"]) >= 20:
+            if r["cresc_mom"] > 0:
+                insights.append(
+                    f"**{r['desc']}** teve um salto de {r['cresc_mom']:.1f}% no último mês da série "
+                    f"vs o mês anterior."
+                )
+            else:
+                insights.append(
+                    f"**{r['desc']}** teve uma queda de {abs(r['cresc_mom']):.1f}% no último mês da série "
+                    f"vs o mês anterior."
+                )
+
+    if vendedores_multi_df is not None and not vendedores_multi_df.empty:
+        comb = (
+            vendedores_multi_df.groupby(["vendedor_id", "nome"])["valor_total"].sum()
+            .reset_index().sort_values("valor_total", ascending=False)
+        )
+        total_comb_mes = float(comb["valor_total"].sum())
+        if total_comb_mes > 0 and len(comb) > 0:
+            top = comb.iloc[0]
+            top_pct = float(top["valor_total"]) / total_comb_mes * 100
+            rotulo_mes = f" em {MESES_PT[mes_referencia]}/{ano_referencia}" if mes_referencia and ano_referencia else ""
+            if top_pct >= 50:
+                insights.append(
+                    f"Alta concentração de vendedor: **{top['nome']}** sozinho responde por "
+                    f"{top_pct:.1f}% do faturamento combinado do conjunto{rotulo_mes} — risco caso "
+                    f"esse vendedor saia ou reduza o ritmo."
+                )
+            else:
+                insights.append(
+                    f"O conjunto está razoavelmente distribuído entre vendedores{rotulo_mes}: o líder "
+                    f"(**{top['nome']}**) responde por {top_pct:.1f}% do total combinado."
+                )
+
+    return insights
 
 
 @cache_leitura()

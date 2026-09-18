@@ -2572,11 +2572,17 @@ with tab_dashboard:
                 use_container_width=True, hide_index=True,
             )
 
-        st.markdown("##### 🔍 Detalhar um produto")
+        st.markdown("##### 🔍 Comparar Produtos")
         st.caption(
-            "Busque um produto pelo código ou nome pra ver a série histórica mensal (com base "
-            "em toda a série já importada), tendência, e quais vendedores mais vendem ele."
+            "Busque um ou mais produtos pelo código ou nome pra comparar a série histórica "
+            "mensal lado a lado (com base em toda a série já importada), tendência individual, "
+            "participação de cada um no total combinado, quem mais vende e insights automáticos. "
+            "Selecione só um produto pra ver o detalhamento individual."
         )
+
+        if "produtos_comparativo" not in st.session_state:
+            st.session_state["produtos_comparativo"] = []  # [{"cod_produto":..., "descricao_produto":...}]
+
         termo_busca_produto = st.text_input(
             "Buscar produto (código ou nome)", key="termo_busca_produto",
             placeholder="Ex.: ureia, 1234, adubo...",
@@ -2587,67 +2593,191 @@ with tab_dashboard:
                 st.info("Nenhum produto encontrado com esse termo.")
             else:
                 opcoes_busca = {
-                    f"{row['cod_produto']} — {row['descricao_produto']}": row["cod_produto"]
+                    f"{row['cod_produto']} — {row['descricao_produto']}": (row["cod_produto"], row["descricao_produto"])
                     for _, row in resultados_busca.iterrows()
                 }
-                escolha_busca = st.selectbox(
-                    "Selecione o produto", list(opcoes_busca.keys()), key="sel_produto_detalhe"
+                col_busca1, col_busca2 = st.columns([3, 1])
+                with col_busca1:
+                    escolha_busca = st.selectbox(
+                        "Selecione o produto", list(opcoes_busca.keys()), key="sel_produto_detalhe"
+                    )
+                with col_busca2:
+                    st.write("")
+                    st.write("")
+                    if st.button("➕ Adicionar à comparação", key="btn_add_produto_comp"):
+                        cod_sel, desc_sel = opcoes_busca[escolha_busca]
+                        ja_existe = any(
+                            p["cod_produto"] == cod_sel for p in st.session_state["produtos_comparativo"]
+                        )
+                        if not ja_existe:
+                            st.session_state["produtos_comparativo"].append(
+                                {"cod_produto": cod_sel, "descricao_produto": desc_sel}
+                            )
+                        st.rerun()
+
+        produtos_sel_comp = st.session_state["produtos_comparativo"]
+
+        if not produtos_sel_comp:
+            st.caption("Nenhum produto selecionado ainda. Busque acima e clique em \"➕ Adicionar à comparação\".")
+        else:
+            st.write(f"**Produtos selecionados ({len(produtos_sel_comp)})** — clique pra remover:")
+            n_cols_chip = min(len(produtos_sel_comp), 4)
+            cols_chips = st.columns(n_cols_chip)
+            for i, prod in enumerate(produtos_sel_comp):
+                with cols_chips[i % n_cols_chip]:
+                    if st.button(
+                        f"❌ {prod['cod_produto']} — {prod['descricao_produto'][:20]}",
+                        key=f"rm_prod_comp_{prod['cod_produto']}", use_container_width=True,
+                    ):
+                        st.session_state["produtos_comparativo"] = [
+                            p for p in st.session_state["produtos_comparativo"]
+                            if p["cod_produto"] != prod["cod_produto"]
+                        ]
+                        st.rerun()
+            if st.button("🧹 Limpar seleção", key="btn_limpar_produtos_comp"):
+                st.session_state["produtos_comparativo"] = []
+                st.rerun()
+
+            cods_comp = [p["cod_produto"] for p in produtos_sel_comp]
+            try:
+                serie_multi_df = db.get_serie_produtos_multi(cods_comp, loja=loja_filtro, meses=12)
+            except Exception as e:
+                st.error("Não foi possível carregar a série histórica dos produtos selecionados.")
+                st.exception(e)
+                serie_multi_df = pd.DataFrame()
+
+            if serie_multi_df.empty:
+                st.info("Sem série histórica pra esses produtos no filtro selecionado.")
+            else:
+                cods_com_dado = [c for c in cods_comp if c in set(serie_multi_df["cod_produto"].unique())]
+                paleta_multi = ["#1a5276", "#2e86c1", "#1e8449", "#f39c12", "#c0392b", "#8e44ad", "#16a085", "#7f8c8d"]
+
+                meses_presentes = (
+                    serie_multi_df[["ano", "mes"]].drop_duplicates().sort_values(["ano", "mes"])
                 )
-                cod_produto_sel = opcoes_busca[escolha_busca]
+                rotulos_meses = [
+                    f"{db.MESES_PT[int(r['mes'])][:3]}/{int(r['ano'])}" for _, r in meses_presentes.iterrows()
+                ]
+                fig_multi = go.Figure()
+                for i, cod in enumerate(cods_com_dado):
+                    sub = serie_multi_df[serie_multi_df["cod_produto"] == cod]
+                    desc = sub["descricao_produto"].iloc[0]
+                    sub_idx = sub.set_index(["ano", "mes"])["valor_total"]
+                    valores_alinhados = [
+                        float(sub_idx.get((int(r["ano"]), int(r["mes"])), 0.0))
+                        for _, r in meses_presentes.iterrows()
+                    ]
+                    fig_multi.add_trace(go.Bar(
+                        name=f"{cod} — {str(desc)[:28]}", x=rotulos_meses, y=valores_alinhados,
+                        marker_color=paleta_multi[i % len(paleta_multi)],
+                    ))
+                fig_multi.update_layout(
+                    barmode="group", margin=dict(l=10, r=10, t=30, b=10), height=380,
+                    yaxis=dict(title="Faturamento (R$)"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig_multi, use_container_width=True)
 
-                serie_prod_sel = db.get_serie_produto(cod_produto_sel, loja=loja_filtro, meses=12)
-                if serie_prod_sel.empty:
-                    st.info("Sem série histórica pra esse produto no filtro selecionado.")
+                st.write("**Indicadores por produto (período) + total combinado**")
+                linhas_kpi = []
+                total_combinado = 0.0
+                qtd_combinada = 0.0
+                for cod in cods_com_dado:
+                    sub = serie_multi_df[serie_multi_df["cod_produto"] == cod].sort_values(["ano", "mes"])
+                    desc = sub["descricao_produto"].iloc[0]
+                    total_prod = float(sub["valor_total"].sum())
+                    qtd_prod = float(sub["qtd_total"].sum())
+                    media_prod = total_prod / len(sub) if len(sub) else 0.0
+                    total_combinado += total_prod
+                    qtd_combinada += qtd_prod
+                    tendencia_txt = "—"
+                    if len(sub) >= 3:
+                        xs_m = np.arange(len(sub), dtype=float)
+                        ys_m = sub["valor_total"].to_numpy(dtype=float)
+                        slope_m = float(np.polyfit(xs_m, ys_m, 1)[0])
+                        slope_pct_m = (slope_m / media_prod * 100) if media_prod > 0 else 0.0
+                        tendencia_txt = (
+                            "📈 alta" if slope_pct_m > 5 else ("📉 queda" if slope_pct_m < -5 else "➡️ estável")
+                        )
+                    linhas_kpi.append({
+                        "Cód.": cod, "Produto": desc, "Faturamento": db.formatar_moeda(total_prod),
+                        "Qtd.": _fmt_qtd(qtd_prod), "Média Mensal": db.formatar_moeda(media_prod),
+                        "Tendência": tendencia_txt,
+                    })
+                st.dataframe(pd.DataFrame(linhas_kpi), use_container_width=True, hide_index=True)
+
+                kc1, kc2 = st.columns(2)
+                with kc1:
+                    kpi_card(st, "Faturamento Combinado (período)", db.formatar_moeda(total_combinado))
+                with kc2:
+                    kpi_card(st, "Qtd. Combinada (período)", _fmt_qtd(qtd_combinada))
+
+                st.write(f"**Quem mais vende esse conjunto ({db.MESES_PT[mes_filtro]}/{ano_filtro})**")
+                try:
+                    vend_multi_df = db.get_vendedores_por_produtos_multi(
+                        cods_comp, ano_filtro, mes_filtro, loja=loja_filtro
+                    )
+                except Exception as e:
+                    st.error("Não foi possível carregar os vendedores desse conjunto.")
+                    st.exception(e)
+                    vend_multi_df = pd.DataFrame()
+
+                if vend_multi_df.empty:
+                    st.caption("Ninguém vendeu esses produtos no mês selecionado.")
                 else:
-                    serie_prod_sel = serie_prod_sel.copy()
-                    serie_prod_sel["rotulo"] = serie_prod_sel.apply(
-                        lambda r: f"{db.MESES_PT[int(r['mes'])][:3]}/{int(r['ano'])}", axis=1
+                    comb_vend = (
+                        vend_multi_df.groupby(["vendedor_id", "nome", "loja"])
+                        .agg(qtd_total=("qtd_total", "sum"), valor_total=("valor_total", "sum"))
+                        .reset_index().sort_values("valor_total", ascending=False)
                     )
-                    dcol1, dcol2 = st.columns([1.4, 1])
-                    with dcol1:
-                        fig_prod_sel = go.Figure(go.Bar(
-                            x=serie_prod_sel["rotulo"], y=serie_prod_sel["valor_total"], marker_color=AZUL_CLARO,
-                        ))
-                        fig_prod_sel.update_layout(
-                            margin=dict(l=10, r=10, t=20, b=10), height=300,
-                            yaxis=dict(title="Faturamento (R$)"),
-                        )
-                        st.plotly_chart(fig_prod_sel, use_container_width=True)
-                    with dcol2:
-                        total_hist_prod = float(serie_prod_sel["valor_total"].sum())
-                        qtd_hist_prod = float(serie_prod_sel["qtd_total"].sum())
-                        media_mensal_prod = total_hist_prod / len(serie_prod_sel)
-                        kpi_card(st, "Faturamento (período)", db.formatar_moeda(total_hist_prod))
-                        kpi_card(st, "Qtd. Vendida (período)", _fmt_qtd(qtd_hist_prod))
-                        kpi_card(st, "Média Mensal", db.formatar_moeda(media_mensal_prod))
-                        if len(serie_prod_sel) >= 3:
-                            xs_ps = np.arange(len(serie_prod_sel), dtype=float)
-                            ys_ps = serie_prod_sel["valor_total"].to_numpy(dtype=float)
-                            slope_ps = float(np.polyfit(xs_ps, ys_ps, 1)[0])
-                            slope_pct_ps = (slope_ps / media_mensal_prod * 100) if media_mensal_prod > 0 else 0.0
-                            if slope_pct_ps > 5:
-                                rot_ps = "📈 em alta"
-                            elif slope_pct_ps < -5:
-                                rot_ps = "📉 em queda"
-                            else:
-                                rot_ps = "➡️ estável"
-                            kpi_card(st, "Tendência", rot_ps)
+                    comb_vend_fmt = comb_vend.copy()
+                    comb_vend_fmt["Qtd"] = comb_vend_fmt["qtd_total"].apply(_fmt_qtd)
+                    comb_vend_fmt["Valor Total"] = comb_vend_fmt["valor_total"].apply(db.formatar_moeda)
+                    st.dataframe(
+                        comb_vend_fmt[["nome", "loja", "Qtd", "Valor Total"]]
+                        .rename(columns={"nome": "Vendedor", "loja": "Loja"}),
+                        use_container_width=True, hide_index=True,
+                    )
+                    if len(cods_com_dado) > 1:
+                        with st.expander("Ver detalhamento por produto"):
+                            vend_multi_fmt = vend_multi_df.copy()
+                            vend_multi_fmt["Qtd"] = vend_multi_fmt["qtd_total"].apply(_fmt_qtd)
+                            vend_multi_fmt["Valor Total"] = vend_multi_fmt["valor_total"].apply(db.formatar_moeda)
+                            st.dataframe(
+                                vend_multi_fmt[[
+                                    "cod_produto", "descricao_produto", "nome", "loja", "Qtd", "Valor Total"
+                                ]].rename(columns={
+                                    "cod_produto": "Cód.", "descricao_produto": "Produto",
+                                    "nome": "Vendedor", "loja": "Loja",
+                                }),
+                                use_container_width=True, hide_index=True,
+                            )
 
-                    st.write("**Quem mais vende esse produto (mês do filtro)**")
-                    vend_prod_df = db.get_vendedores_por_produto(
-                        cod_produto_sel, ano_filtro, mes_filtro, loja=loja_filtro
+                st.write("**📌 Insights automáticos**")
+                try:
+                    insights_multi = db.gerar_insights_comparativo_produtos(
+                        serie_multi_df, vendedores_multi_df=vend_multi_df,
+                        mes_referencia=mes_filtro, ano_referencia=ano_filtro,
                     )
-                    if vend_prod_df.empty:
-                        st.caption("Ninguém vendeu esse produto no mês selecionado.")
-                    else:
-                        vend_prod_fmt = vend_prod_df.copy()
-                        vend_prod_fmt["Qtd"] = vend_prod_fmt["qtd_total"].apply(_fmt_qtd)
-                        vend_prod_fmt["Valor Total"] = vend_prod_fmt["valor_total"].apply(db.formatar_moeda)
-                        st.dataframe(
-                            vend_prod_fmt[["nome", "loja", "Qtd", "Valor Total"]]
-                            .rename(columns={"nome": "Vendedor", "loja": "Loja"}),
-                            use_container_width=True, hide_index=True,
-                        )
+                except Exception as e:
+                    insights_multi = []
+                    st.error("Não foi possível gerar os insights automáticos.")
+                    st.exception(e)
+                for ins in insights_multi:
+                    st.markdown(f"- {ins}")
+
+                try:
+                    pdf_comp_bytes = pdf_export.gerar_pdf_comparativo_produtos(
+                        cods_comp, loja_filtro, ano_filtro, mes_filtro, meses_serie=12,
+                    )
+                    nome_pdf_comp = f"Comparativo_Produtos_{ano_filtro}_{mes_filtro:02d}.pdf"
+                    st.download_button(
+                        "⬇️ Baixar comparativo em PDF", data=pdf_comp_bytes, file_name=nome_pdf_comp,
+                        mime="application/pdf", key="dl_pdf_comparativo_produtos",
+                    )
+                except Exception as e:
+                    st.error("Não foi possível gerar o PDF do comparativo.")
+                    st.exception(e)
 
         st.markdown("---")
 

@@ -1001,3 +1001,204 @@ def gerar_pdf_estrategico_loja(loja, ano, mes, dias_uteis_total=None):
     doc.build(elementos)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Relatório Comparativo de Produtos (multi-produto)
+# ---------------------------------------------------------------------------
+
+def _grafico_multi_produtos(serie_multi_df, cods_ordenados):
+    """Gráfico de barras AGRUPADAS com uma série por produto (cor diferente por
+    produto, mesma paleta usada no gráfico de pizza do mix) — alinha todos os
+    produtos no mesmo eixo de meses, preenchendo com 0 quando um produto não
+    vendeu naquele mês, pra não desalinhar as barras entre os produtos."""
+    meses_presentes = serie_multi_df[["ano", "mes"]].drop_duplicates().sort_values(["ano", "mes"])
+    rotulos = [f"{int(r['mes']):02d}/{str(int(r['ano']))[2:]}" for _, r in meses_presentes.iterrows()]
+
+    drawing = Drawing(470, 200)
+    chart = VerticalBarChart()
+    chart.x = 35
+    chart.y = 45
+    chart.height = 125
+    chart.width = 330
+
+    dados_series = []
+    for cod in cods_ordenados:
+        sub = serie_multi_df[serie_multi_df["cod_produto"] == cod]
+        sub_idx = sub.set_index(["ano", "mes"])["valor_total"]
+        valores = [
+            float(sub_idx.get((int(r["ano"]), int(r["mes"])), 0.0)) for _, r in meses_presentes.iterrows()
+        ]
+        dados_series.append(valores)
+    chart.data = dados_series
+    chart.categoryAxis.categoryNames = rotulos
+    chart.categoryAxis.labels.fontSize = 6.5
+    chart.valueAxis.valueMin = 0
+    chart.groupSpacing = 6
+    chart.barWidth = 5
+    for i in range(len(dados_series)):
+        chart.bars[i].fillColor = _PALETA_PIZZA[i % len(_PALETA_PIZZA)]
+    drawing.add(chart)
+
+    legend = Legend()
+    legend.x = 380
+    legend.y = 140
+    legend.dx = 8
+    legend.dy = 8
+    legend.fontSize = 6.5
+    legend.alignment = "left"
+    legend.columnMaximum = 10
+    legend.colorNamePairs = []
+    for i, cod in enumerate(cods_ordenados):
+        sub = serie_multi_df[serie_multi_df["cod_produto"] == cod]
+        desc = str(sub["descricao_produto"].iloc[0]) if not sub.empty else str(cod)
+        legend.colorNamePairs.append(
+            (_PALETA_PIZZA[i % len(_PALETA_PIZZA)], f"{cod} - {desc[:20]}")
+        )
+    drawing.add(legend)
+    return drawing
+
+
+def gerar_pdf_comparativo_produtos(cods_produtos, loja, ano, mes, meses_serie=12):
+    """Gera o Relatório Comparativo de Produtos: série histórica mensal de N
+    produtos lado a lado (uma cor por produto), indicadores individuais + total
+    combinado, ranking de vendedores desse conjunto no mês de referência e
+    insights automáticos 100% determinísticos (mesma lógica usada no painel).
+    Retorna os bytes do PDF."""
+    cods_produtos = list(dict.fromkeys(cods_produtos))
+    serie_multi_df = db.get_serie_produtos_multi(cods_produtos, loja=loja, meses=meses_serie)
+    try:
+        vendedores_multi_df = db.get_vendedores_por_produtos_multi(cods_produtos, ano, mes, loja=loja)
+    except Exception:
+        vendedores_multi_df = pd.DataFrame()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, topMargin=1.6 * cm, bottomMargin=1.6 * cm,
+        leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+    )
+    styles = getSampleStyleSheet()
+    titulo_style = ParagraphStyle("titulo", parent=styles["Heading1"], textColor=AZUL, spaceAfter=2)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], textColor=CINZA)
+    secao_style = ParagraphStyle("secao", parent=styles["Heading3"], textColor=AZUL, spaceBefore=10)
+
+    elementos = []
+    elementos.append(Paragraph("Relatório Comparativo de Produtos", titulo_style))
+    elementos.append(Paragraph(str(loja) if loja else "Ambas as lojas", styles["Heading2"]))
+    elementos.append(Paragraph(
+        f"{len(cods_produtos)} produto(s) comparado(s) — mês de referência: {db.MESES_PT[mes]}/{ano} "
+        f"(série histórica dos últimos {meses_serie} meses)",
+        sub_style,
+    ))
+    elementos.append(Spacer(1, 0.4 * cm))
+    elementos.append(HRFlowable(width="100%", color=AZUL, thickness=1.2))
+    elementos.append(Spacer(1, 0.5 * cm))
+
+    if serie_multi_df.empty:
+        elementos.append(Paragraph(
+            "Nenhum dado histórico encontrado para os produtos selecionados neste recorte.",
+            styles["Normal"],
+        ))
+        doc.build(elementos)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    cods_ordenados = [c for c in cods_produtos if c in set(serie_multi_df["cod_produto"].unique())]
+
+    elementos.append(Paragraph("Série Histórica Comparada", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    elementos.append(_grafico_multi_produtos(serie_multi_df, cods_ordenados))
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    elementos.append(Paragraph("Indicadores por Produto + Total Combinado", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    dados_kpi = [["Cód.", "Produto", "Faturamento", "Qtd.", "Média Mensal", "Tendência"]]
+    total_combinado = 0.0
+    qtd_combinada = 0.0
+    for cod in cods_ordenados:
+        sub = serie_multi_df[serie_multi_df["cod_produto"] == cod].sort_values(["ano", "mes"])
+        desc = sub["descricao_produto"].iloc[0]
+        total_prod = float(sub["valor_total"].sum())
+        qtd_prod = float(sub["qtd_total"].sum())
+        media_prod = total_prod / len(sub) if len(sub) else 0.0
+        total_combinado += total_prod
+        qtd_combinada += qtd_prod
+        tendencia_txt = "—"
+        if len(sub) >= 3:
+            xs = np.arange(len(sub), dtype=float)
+            ys = sub["valor_total"].to_numpy(dtype=float)
+            slope = float(np.polyfit(xs, ys, 1)[0])
+            slope_pct = (slope / media_prod * 100) if media_prod > 0 else 0.0
+            tendencia_txt = "Alta" if slope_pct > 5 else ("Queda" if slope_pct < -5 else "Estável")
+        dados_kpi.append([
+            str(cod), str(desc)[:32], db.formatar_moeda(total_prod), f"{qtd_prod:.0f}",
+            db.formatar_moeda(media_prod), tendencia_txt,
+        ])
+    dados_kpi.append(["", "TOTAL COMBINADO", db.formatar_moeda(total_combinado), f"{qtd_combinada:.0f}", "", ""])
+
+    tabela_kpi = Table(dados_kpi, colWidths=[1.8 * cm, 5.2 * cm, 3 * cm, 1.8 * cm, 3 * cm, 2.2 * cm])
+    tabela_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#eaeded")),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f4f6f7")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elementos.append(tabela_kpi)
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    elementos.append(Paragraph(f"Quem Mais Vende Esse Conjunto — {db.MESES_PT[mes]}/{ano}", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    if vendedores_multi_df.empty:
+        elementos.append(Paragraph("Ninguém vendeu esses produtos no mês de referência.", styles["Normal"]))
+    else:
+        comb_vend = (
+            vendedores_multi_df.groupby(["vendedor_id", "nome", "loja"])
+            .agg(qtd_total=("qtd_total", "sum"), valor_total=("valor_total", "sum"))
+            .reset_index().sort_values("valor_total", ascending=False)
+        )
+        dados_vend = [["Vendedor", "Loja", "Qtd.", "Valor Total"]]
+        for _, r in comb_vend.head(15).iterrows():
+            dados_vend.append([r["nome"], r["loja"], f"{r['qtd_total']:.0f}", db.formatar_moeda(r["valor_total"])])
+        tabela_vend = Table(dados_vend, colWidths=[6 * cm, 4 * cm, 2.5 * cm, 4.5 * cm])
+        tabela_vend.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), AZUL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(tabela_vend)
+    elementos.append(Spacer(1, 0.3 * cm))
+
+    elementos.append(Paragraph("Insights Automáticos", secao_style))
+    elementos.append(Spacer(1, 0.2 * cm))
+    try:
+        insights = db.gerar_insights_comparativo_produtos(
+            serie_multi_df, vendedores_multi_df=vendedores_multi_df, mes_referencia=mes, ano_referencia=ano,
+        )
+    except Exception as e_ins:
+        insights = [f"Não foi possível gerar os insights automáticos ({e_ins})."]
+    for ins in insights:
+        elementos.append(Paragraph(f"• {_md_para_reportlab(ins)}", styles["Normal"]))
+        elementos.append(Spacer(1, 0.1 * cm))
+
+    elementos.append(Spacer(1, 0.8 * cm))
+    elementos.append(HRFlowable(width="100%", color=colors.lightgrey, thickness=0.5))
+    elementos.append(Spacer(1, 0.2 * cm))
+    elementos.append(Paragraph(
+        f"Relatório gerado automaticamente em {datetime.now().strftime('%d/%m/%Y às %H:%M')}.",
+        sub_style,
+    ))
+
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer.getvalue()
