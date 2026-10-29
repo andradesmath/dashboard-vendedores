@@ -53,7 +53,10 @@ from sgi_relatorio import casar_produtos_vendedores, parse_relatorio_produtos_pd
 from sync_sgi import (  # noqa: E402
     LOJA_PARA_EMPRESA_ENV,
     _salvar_debug,
+    _sincronizar_vendas_diarias,
+    abrir_aba_totais_de_vendas,
     fazer_login,
+    gerar_pdf_totais_de_vendas,
     gerar_pdf_totais_de_vendas_por_produto,
     navegar_ate_totais_de_vendas_por_produto,
     obter_lojas_configuradas,
@@ -78,11 +81,9 @@ def _gerar_meses(ano_ini, mes_ini, ano_fim, mes_fim):
 def _processar_pdf_produtos(loja, data_tag, pdf_bytes, rotulo):
     """Faz o parse do PDF de produtos e grava no banco sob a data `data_tag`
     (1º dia do mês pro histórico mensal, o próprio dia pro mês corrente) —
-    tanto o detalhe por produto (vendas_produtos_diarias) quanto o resumo por
-    vendedor (vendas_diarias: Realizado = soma de valor_total, Pedidos = soma
-    da coluna 'Vendas' como aproximação), igual à sincronização diária em
-    scripts/sync_sgi.py. Isso re-popula vendas_diarias com o histórico também,
-    já que antes esse backfill só gravava vendas_produtos_diarias."""
+    só o detalhe por produto (vendas_produtos_diarias). O Realizado/Pedidos
+    (vendas_diarias) vem do relatório 'Totais de Vendas' (T. Liq. = líquido), via
+    _processar_vendas_liquido — o 'Valor Total' por produto NÃO é o líquido."""
     resultado = parse_relatorio_produtos_pdf(pdf_bytes)
     if not resultado["produtos"]:
         print(f"  [{loja}] {rotulo}: nenhum produto reconhecido (sem vendas nesse "
@@ -101,14 +102,20 @@ def _processar_pdf_produtos(loja, data_tag, pdf_bytes, rotulo):
     for vendedor_id, produtos in por_vendedor.items():
         db.upsert_vendas_produtos_dia(vendedor_id, data_tag, produtos)
 
-        soma_valor = sum(p["valor_total"] or 0.0 for p in produtos)
-        soma_vendas = sum(p["vendas"] or 0 for p in produtos)
-        db.upsert_venda(vendedor_id, data_tag, float(soma_valor), int(round(soma_vendas)))
-
     total_valor = sum(p["valor_total"] or 0.0 for p in matched)
     print(f"  [{loja}] {rotulo}: {len(matched)} produto(s) de {len(por_vendedor)} "
           f"vendedor(es) — R$ {total_valor:,.2f}.")
     return len(matched)
+
+
+def _processar_vendas_liquido(aba_vendas, context, empresa_texto, loja, data_tag, data_ini_str, data_fim_str, rotulo):
+    """Gera 'Totais de Vendas' do período e grava T. Liq./Nº Ped em vendas_diarias
+    sob `data_tag`. Erro num período é registrado e não derruba o backfill."""
+    try:
+        pdf = gerar_pdf_totais_de_vendas(aba_vendas, context, empresa_texto, data_ini_str, data_fim_str, loja=loja)
+        _sincronizar_vendas_diarias(loja, data_tag, pdf)
+    except Exception as e:
+        print(f"  [{loja}] {rotulo}: ERRO em 'Totais de Vendas' (líquido não gravado): {e}")
 
 
 def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=None):
@@ -132,6 +139,7 @@ def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=Non
     print(f"[{loja}] Login...")
     browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
     try:
+        aba_vendas = abrir_aba_totais_de_vendas(page, context)
         navegar_ate_totais_de_vendas_por_produto(page)
         _salvar_debug(page, loja, "backfill_form_antes")
 
@@ -146,6 +154,7 @@ def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=Non
                 print(f"  [{loja}] gerando relatório de {rotulo}...")
                 pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
                 _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
+                _processar_vendas_liquido(aba_vendas, context, empresa_texto, loja, dia, data_str, data_str, rotulo)
                 dia += timedelta(days=1)
             return
 
@@ -161,6 +170,9 @@ def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=Non
                 print(f"  [{loja}] gerando relatório de {rotulo}...")
                 pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str)
                 _processar_pdf_produtos(loja, date(ano, mes, 1), pdf_bytes, rotulo)
+                _processar_vendas_liquido(
+                    aba_vendas, context, empresa_texto, loja, date(ano, mes, 1), data_ini_str, data_fim_str, rotulo
+                )
 
         # ---- Mês atual: dia a dia, do dia 1º até hoje ----
         dia = date(hoje.year, hoje.month, 1)
@@ -170,6 +182,7 @@ def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=Non
             print(f"  [{loja}] gerando relatório de {rotulo}...")
             pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
             _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
+            _processar_vendas_liquido(aba_vendas, context, empresa_texto, loja, dia, data_str, data_str, rotulo)
             dia += timedelta(days=1)
 
     except Exception:

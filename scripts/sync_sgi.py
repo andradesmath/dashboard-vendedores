@@ -6,8 +6,14 @@ no Postgres do painel, puxando DOIS relatórios na mesma sessão logada:
      marca/fornecedor (vendas_produtos_diarias) — agrupamento sempre
      "Vendedor/Produto".
 
-Roteiro de cada um: Login -> Vendas -> <relatório> -> período = hoje -> gerar
+Roteiro de cada um: Login -> Vendas -> <relatório> -> período = dia -> gerar
 PDF -> extrair dados.
+
+REGRA DE NEGÓCIO: o "Realizado" (vendas_diarias.valor_realizado) é o T. LIQ.
+(líquido: bruto - bonificação/desconto - troca) do relatório "Totais de Vendas",
+e Pedidos = Nº Ped desse mesmo relatório. O relatório por produto alimenta SÓ o
+detalhe por produto/marca (vendas_produtos_diarias): a coluna "Valor Total" dele
+não é o líquido, então nunca deve ser gravada em vendas_diarias.
 
 Pensado para rodar via GitHub Actions (agendado às 12h e 19h de Brasília, e sob
 demanda pelo botão "Sincronizar com o SGI agora" do painel, que dispara esse mesmo
@@ -45,9 +51,10 @@ Uso:
     python scripts/sync_sgi.py --headed         # abre o navegador visível (debug local)
 """
 import argparse
+import base64
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ_PROJETO)
@@ -314,6 +321,69 @@ def navegar_ate_totais_de_vendas_por_produto(page):
     page.wait_for_timeout(1500)
 
 
+def _baixar_pdf_vendas_via_post(page, data_ini_str, data_fim_str):
+    """Gera o PDF de 'Totais de Vendas' SEM passar pelo widget bootstrap-datepicker
+    (que se mostrou não confiável de automatizar): monta o FormData do próprio
+    formulário (#formRelatorio, já com Empresa e demais filtros nos valores padrão
+    da tela), sobrescreve data_inicial/data_final e faz POST para a rota de PDF do
+    formulário (atributo rota-pdf) usando a sessão logada da página. Retorna os
+    bytes do PDF ou None se algo não bater (aí o chamador cai no fluxo por clique)."""
+    try:
+        resultado = page.evaluate(
+            """async ({d1, d2}) => {
+                const form = document.querySelector('#formRelatorio');
+                if (!form) return {erro: 'formulario #formRelatorio nao encontrado'};
+                const url = form.getAttribute('rota-pdf');
+                if (!url) return {erro: 'atributo rota-pdf ausente'};
+                const fd = new FormData(form);
+                fd.set('data_inicial', d1);
+                fd.set('data_final', d2);
+                const r = await fetch(url, {method: 'POST', body: fd, credentials: 'same-origin'});
+                const buf = new Uint8Array(await r.arrayBuffer());
+                let bin = '';
+                for (let i = 0; i < buf.length; i += 0x8000) {
+                    bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+                }
+                return {status: r.status, ctype: r.headers.get('content-type') || '', b64: btoa(bin)};
+            }""",
+            {"d1": data_ini_str, "d2": data_fim_str},
+        )
+    except Exception as e:
+        print(f"  [aviso] POST direto do PDF falhou ({e}); usando o fluxo por clique.")
+        return None
+
+    if resultado.get("erro"):
+        print(f"  [aviso] POST direto indisponível: {resultado['erro']}; usando o fluxo por clique.")
+        return None
+    conteudo = base64.b64decode(resultado.get("b64", ""))
+    if resultado.get("status") != 200 or not conteudo.startswith(b"%PDF"):
+        print(
+            f"  [aviso] POST direto não devolveu PDF (HTTP {resultado.get('status')}, "
+            f"{resultado.get('ctype')}); usando o fluxo por clique."
+        )
+        return None
+    return conteudo
+
+
+def _validar_periodo_pdf_vendas(pdf_bytes, data_ini_str, data_fim_str):
+    """Garante que o PDF de 'Totais de Vendas' é do período pedido. Um relatório de
+    outro período (o bug antigo: saía sempre a data de hoje) NUNCA pode ser gravado
+    como se fosse do dia pedido — então divergência aborta com erro."""
+    resultado = parse_relatorio_vendas_pdf(pdf_bytes)
+    ini, fim = resultado.get("data_ini"), resultado.get("data_fim")
+    if ini is None or fim is None:
+        print("  [aviso] não consegui ler o período impresso no PDF de 'Totais de Vendas'; "
+              "não foi possível validar a data.")
+        return
+    esperado_ini = datetime.strptime(data_ini_str, "%d/%m/%Y").date()
+    esperado_fim = datetime.strptime(data_fim_str, "%d/%m/%Y").date()
+    if (ini, fim) != (esperado_ini, esperado_fim):
+        raise RuntimeError(
+            f"PDF de 'Totais de Vendas' veio com período {ini:%d/%m/%Y} a {fim:%d/%m/%Y}, "
+            f"mas o pedido era {data_ini_str} a {data_fim_str} — nada foi gravado."
+        )
+
+
 def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_fim_str, loja=None):
     """Assume que já está na página 'Totais de Vendas' (ver navegar_ate_totais_de_vendas).
     Reseleciona a Empresa (o valor não acompanha automaticamente o do login) e o
@@ -332,6 +402,13 @@ def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_
     caractere a caractere) e fecha o calendário com Escape."""
     selecionar_empresa_no_formulario(page, empresa_texto)
 
+    # Caminho principal: POST direto com as datas (ignora o datepicker). Só cai no
+    # fluxo por clique abaixo se o POST não devolver um PDF válido.
+    pdf = _baixar_pdf_vendas_via_post(page, data_ini_str, data_fim_str)
+    if pdf is not None:
+        _validar_periodo_pdf_vendas(pdf, data_ini_str, data_fim_str)
+        return pdf
+
     preenchido = _preencher_data_inicial_final(page, data_ini_str, data_fim_str, "Data Inicial", "Data Final")
     if not preenchido:
         print(
@@ -343,7 +420,9 @@ def gerar_pdf_totais_de_vendas(page, context, empresa_texto, data_ini_str, data_
         _salvar_debug(page, loja, "form_vendas_depois_periodo")
 
     botao_pdf = page.get_by_role("button", name="PDF", exact=False)
-    return _capturar_pdf_via_clique(page, context, botao_pdf)
+    pdf = _capturar_pdf_via_clique(page, context, botao_pdf)
+    _validar_periodo_pdf_vendas(pdf, data_ini_str, data_fim_str)
+    return pdf
 
 
 def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str):
@@ -356,52 +435,29 @@ def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim
     return _capturar_pdf_via_clique(page, context, botao_imprimir)
 
 
-def logar_e_baixar_relatorios(playwright, loja, url_login, login, senha, empresa_texto, data_alvo=None, headed=False):
-    """Abre o navegador, loga no SGI e captura o relatório 'Totais de Vendas Por
-    Produto' do dia (período = `data_alvo`, ou hoje se não informado). Retorna
-    {"produtos": bytes}.
-
-    Antes essa função também gerava o relatório 'Totais de Vendas' à parte (pra
-    tirar Nº Ped/T. Liq.), mas o campo de período daquele formulário é um widget
-    bootstrap-datepicker que se mostrou consistentemente não confiável de
-    automatizar (várias tentativas — fill(), Tab, digitação simulada, Escape —
-    continuaram gerando o relatório com a data de hoje em vez da pedida). Decisão
-    tomada com o usuário: abandonar esse relatório na automação e derivar
-    Realizado/Pedidos por vendedor a partir da SOMA dos produtos do relatório
-    'Totais de Vendas Por Produto' (já validado, extrai corretamente) — ver
-    _sincronizar_vendas_produtos. O relatório 'Totais de Vendas' continua
-    disponível pra importação MANUAL de PDF no painel (aba Lançamentos)."""
-    data_alvo = data_alvo or date.today()
-    browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
-    try:
-        data_str = data_alvo.strftime("%d/%m/%Y")
-
-        navegar_ate_totais_de_vendas_por_produto(page)
-        _salvar_debug(page, loja, "form_produto_antes_preencher")
-        pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
-
-        return {"produtos": pdf_produtos}
-    except Exception:
-        _salvar_debug(page, loja, "erro")
-        raise
-    finally:
-        browser.close()
+def abrir_aba_totais_de_vendas(page, context):
+    """Abre uma SEGUNDA aba (mesma sessão logada) já no formulário 'Totais de
+    Vendas', pra alternar entre os dois relatórios sem renavegar pelos menus a cada
+    dia. `page` é a aba principal, já logada."""
+    aba = context.new_page()
+    aba.goto(page.url, wait_until="domcontentloaded", timeout=60000)
+    aba.wait_for_timeout(1500)
+    navegar_ate_totais_de_vendas(aba)
+    return aba
 
 
-def _sincronizar_vendas_diarias(loja, hoje, pdf_bytes):
-    """NÃO é mais chamada na sincronização automática (sincronizar_loja) — o
-    formulário de período de 'Totais de Vendas' se mostrou não confiável de
-    automatizar. Fica aqui só de referência / caso alguém queira reativar depois
-    que o widget de data for corrigido. O upload manual desse mesmo relatório
-    (aba Lançamentos do painel) continua funcionando normalmente, sem depender
-    desta função."""
+def _sincronizar_vendas_diarias(loja, dia, pdf_bytes):
+    """Grava em vendas_diarias o T. LIQ. (líquido) e o Nº Ped REAIS de cada
+    vendedor, vindos do relatório 'Totais de Vendas'. É a fonte oficial do
+    Realizado/Pedidos do painel."""
     resultado = parse_relatorio_vendas_pdf(pdf_bytes)
     if not resultado["linhas"]:
         with open(f"debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf", "wb") as f:
             f.write(pdf_bytes)
-        print(f"[{loja}] Nenhuma linha de vendedor reconhecida em 'Totais de Vendas' "
-              f"(salvo em debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf para inspeção).")
-        return
+        print(f"[{loja}] {dia:%d/%m/%Y}: nenhuma linha de vendedor em 'Totais de Vendas' "
+              "(dia sem vendas ou PDF diferente do esperado; PDF salvo para inspeção). "
+              "Nada gravado em vendas_diarias.")
+        return 0
 
     vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
     matched, nao_encontrados = casar_vendedores(resultado["linhas"], vendedores_df)
@@ -410,29 +466,25 @@ def _sincronizar_vendas_diarias(loja, hoje, pdf_bytes):
               + ", ".join(nao_encontrados))
 
     for item in matched:
-        db.upsert_venda(item["vendedor_id"], hoje, float(item["t_liq"]), int(item["n_ped"]))
-        print(f"[{loja}] {item['nome']}: {item['n_ped']} pedido(s), R$ {item['t_liq']:.2f}")
+        db.upsert_venda(item["vendedor_id"], dia, float(item["t_liq"]), int(item["n_ped"]))
 
-    print(f"[{loja}] {len(matched)} vendedor(es) sincronizado(s) em 'Totais de Vendas' "
-          f"para {hoje.strftime('%d/%m/%Y')}.")
+    total = sum(i["t_liq"] for i in matched)
+    print(f"[{loja}] {dia:%d/%m/%Y}: {len(matched)} vendedor(es) — líquido R$ {total:,.2f} "
+          "(vendas_diarias atualizado a partir de 'Totais de Vendas').")
+    return len(matched)
 
 
-def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
-    """Faz o parse do relatório 'Totais de Vendas Por Produto' e grava tanto o
-    detalhe por produto (vendas_produtos_diarias) quanto o RESUMO por vendedor
-    (vendas_diarias — Realizado/Pedidos), os dois derivados do MESMO PDF já
-    validado. Antes, vendas_diarias vinha de um PDF à parte ('Totais de Vendas'),
-    cujo formulário de período mostrou-se não confiável de automatizar. Como
-    esse relatório de produtos não tem uma coluna de 'número de pedidos', usamos
-    a SOMA da coluna 'Vendas' por vendedor como aproximação de Pedidos — pode
-    superestimar um pouco em pedidos com mais de um produto (decisão tomada com
-    o usuário, preferindo consistência de dados a uma métrica de pedidos exata)."""
+def _sincronizar_vendas_produtos(loja, dia, pdf_bytes):
+    """Faz o parse de 'Totais de Vendas Por Produto' e grava SÓ o detalhe por
+    produto/marca (vendas_produtos_diarias). NÃO toca em vendas_diarias: o 'Valor
+    Total' desse relatório não é o líquido — o Realizado vem de
+    _sincronizar_vendas_diarias."""
     resultado = parse_relatorio_produtos_pdf(pdf_bytes)
     if not resultado["produtos"]:
         with open(f"debug_{loja.replace(' ', '_')}_produtos_pdf_vazio.pdf", "wb") as f:
             f.write(pdf_bytes)
-        print(f"[{loja}] Nenhum produto reconhecido em 'Totais de Vendas Por Produto' "
-              f"(salvo em debug_{loja.replace(' ', '_')}_produtos_pdf_vazio.pdf para inspeção).")
+        print(f"[{loja}] {dia:%d/%m/%Y}: nenhum produto reconhecido em 'Totais de Vendas Por "
+              "Produto' (PDF salvo para inspeção).")
         return
 
     vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
@@ -444,39 +496,61 @@ def _sincronizar_vendas_produtos(loja, hoje, pdf_bytes):
     por_vendedor = {}
     for item in matched:
         por_vendedor.setdefault(item["vendedor_id"], []).append(item)
-
     for vendedor_id, produtos in por_vendedor.items():
-        db.upsert_vendas_produtos_dia(vendedor_id, hoje, produtos)
+        db.upsert_vendas_produtos_dia(vendedor_id, dia, produtos)
 
-        soma_valor = sum(p["valor_total"] or 0.0 for p in produtos)
-        soma_vendas = sum(p["vendas"] or 0 for p in produtos)
-        db.upsert_venda(vendedor_id, hoje, float(soma_valor), int(round(soma_vendas)))
-
-    total_valor = sum(p["valor_total"] or 0.0 for p in matched)
-    print(f"[{loja}] {len(matched)} produto(s) de {len(por_vendedor)} vendedor(es) sincronizado(s) em "
-          f"'Totais de Vendas Por Produto' para {hoje.strftime('%d/%m/%Y')} — R$ {total_valor:,.2f} "
-          "(vendas_diarias e vendas_produtos_diarias atualizados a partir deste único relatório).")
+    print(f"[{loja}] {dia:%d/%m/%Y}: {len(matched)} produto(s) de {len(por_vendedor)} vendedor(es) "
+          "gravados em vendas_produtos_diarias.")
 
 
-def sincronizar_loja(playwright, loja, data_alvo, headed=False):
+def sincronizar_loja(playwright, loja, datas, headed=False):
+    """Loga UMA vez e sincroniza cada data de `datas` (lista de date): primeiro o
+    líquido/pedidos ('Totais de Vendas'), depois o detalhe por produto. Uma falha
+    num relatório/dia não impede os demais, mas faz a execução terminar com erro
+    (o workflow fica vermelho em vez de passar em branco)."""
     url_login = os.environ["SGI_URL_LOGIN"]
     login = os.environ["SGI_LOGIN"]
     senha = os.environ["SGI_SENHA"]
     empresa_texto = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
 
-    print(f"[{loja}] Fazendo login e gerando relatório de {data_alvo.strftime('%d/%m/%Y')}...")
-    pdfs = logar_e_baixar_relatorios(
-        playwright, loja, url_login, login, senha, empresa_texto, data_alvo=data_alvo, headed=headed
-    )
+    print(f"[{loja}] Fazendo login...")
+    browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
+    erros = []
+    try:
+        aba_vendas = abrir_aba_totais_de_vendas(page, context)
+        navegar_ate_totais_de_vendas_por_produto(page)
 
-    # Guarda SEMPRE uma cópia do PDF bruto (não só quando o parser não acha
-    # nada) — essencial pra depurar casos em que o parser roda sem erro mas
-    # extrai um valor errado (silencioso, não aparece nos logs de texto).
-    sufixo = data_alvo.strftime("%Y%m%d")
-    with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
-        f.write(pdfs["produtos"])
+        for dia in datas:
+            data_str = dia.strftime("%d/%m/%Y")
+            sufixo = dia.strftime("%Y%m%d")
+            print(f"[{loja}] Sincronizando {data_str}...")
 
-    _sincronizar_vendas_produtos(loja, data_alvo, pdfs["produtos"])
+            try:
+                pdf_vendas = gerar_pdf_totais_de_vendas(
+                    aba_vendas, context, empresa_texto, data_str, data_str, loja=loja
+                )
+                with open(f"debug_{loja.replace(' ', '_')}_vendas_{sufixo}.pdf", "wb") as f:
+                    f.write(pdf_vendas)
+                _sincronizar_vendas_diarias(loja, dia, pdf_vendas)
+            except Exception as e:
+                _salvar_debug(aba_vendas, loja, f"erro_vendas_{sufixo}")
+                erros.append(f"{loja} {data_str} (Totais de Vendas): {e}")
+                print(f"[{loja}] ERRO em 'Totais de Vendas' {data_str}: {e}")
+
+            try:
+                pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
+                with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
+                    f.write(pdf_produtos)
+                _sincronizar_vendas_produtos(loja, dia, pdf_produtos)
+            except Exception as e:
+                _salvar_debug(page, loja, f"erro_produtos_{sufixo}")
+                erros.append(f"{loja} {data_str} (Por Produto): {e}")
+                print(f"[{loja}] ERRO em 'Por Produto' {data_str}: {e}")
+    finally:
+        browser.close()
+
+    if erros:
+        raise RuntimeError(" | ".join(erros))
 
 
 def main():
@@ -484,6 +558,9 @@ def main():
     parser.add_argument("--loja", choices=list(LOJA_PARA_EMPRESA_ENV.keys()), help="Rodar só uma loja (debug).")
     parser.add_argument(
         "--data", help="Data específica a sincronizar, formato DD/MM/AAAA (padrão: hoje).",
+    )
+    parser.add_argument(
+        "--data-fim", help="Data final DD/MM/AAAA: sincroniza dia a dia de --data até aqui (inclusive).",
     )
     parser.add_argument("--headed", action="store_true", help="Abre o navegador visível (só faz sentido local).")
     args = parser.parse_args()
@@ -497,6 +574,18 @@ def main():
     else:
         data_alvo = date.today()
 
+    data_fim = data_alvo
+    if args.data_fim:
+        try:
+            data_fim = datetime.strptime(args.data_fim, "%d/%m/%Y").date()
+        except ValueError:
+            print(f"Data final inválida: '{args.data_fim}' — use o formato DD/MM/AAAA.")
+            sys.exit(1)
+        if data_fim < data_alvo:
+            print("--data-fim não pode ser anterior a --data.")
+            sys.exit(1)
+    datas = [data_alvo + timedelta(days=n) for n in range((data_fim - data_alvo).days + 1)]
+
     lojas = [args.loja] if args.loja else obter_lojas_configuradas()
     if not lojas:
         print(
@@ -509,7 +598,7 @@ def main():
     with sync_playwright() as playwright:
         for loja in lojas:
             try:
-                sincronizar_loja(playwright, loja, data_alvo, headed=args.headed)
+                sincronizar_loja(playwright, loja, datas, headed=args.headed)
             except Exception as e:
                 erros.append(f"{loja}: {e}")
                 print(f"[{loja}] ERRO: {e}")

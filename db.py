@@ -93,7 +93,7 @@ COLUNAS_PAGAMENTO = {
 # cache — garante que a tela sempre mostra o dado atualizado logo após salvar,
 # sem esperar o TTL expirar.
 # --------------------------------------------------------------------------
-def cache_leitura(ttl=600):
+def cache_leitura(ttl=60):  # o sync roda em outro processo (GitHub Actions): só o TTL renova o painel
     try:
         import streamlit as st
         return st.cache_data(ttl=ttl, show_spinner=False)

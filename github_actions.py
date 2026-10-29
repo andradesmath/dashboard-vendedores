@@ -84,7 +84,7 @@ def disparar_workflow(workflow_arquivo, inputs=None, ref="main"):
     return disparado_em
 
 
-def disparar_sincronizacao(loja=None, data=None, ref="main"):
+def disparar_sincronizacao(loja=None, data=None, ref="main", data_fim=None):
     """Dispara o workflow sync_sgi.yml pra rodar agora — ou pra uma data
     específica, se `data` for informado (string "DD/MM/AAAA"; padrão é hoje,
     quando None)."""
@@ -93,6 +93,8 @@ def disparar_sincronizacao(loja=None, data=None, ref="main"):
         inputs["loja"] = loja
     if data:
         inputs["data"] = data
+    if data_fim:
+        inputs["data_fim"] = data_fim
     return disparar_workflow(WORKFLOW_SYNC_DIARIO, inputs=inputs, ref=ref)
 
 
