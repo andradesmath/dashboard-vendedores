@@ -79,7 +79,7 @@ def parse_tokens_relatorio_pdf(tokens):
             bloco = tokens[j:j + 12]
             nome = " ".join(nome_tokens)
             try:
-                n_ped = int(bloco[2])
+                n_ped = int(bloco[2].replace('.', '').replace(',', ''))  # '3.270' = 3270 pedidos
             except ValueError:
                 n_ped = None
             t_liq = parse_valor_brl(bloco[9])
