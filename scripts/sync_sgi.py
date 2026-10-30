@@ -72,6 +72,7 @@ import db  # noqa: E402
 from sgi_relatorio import (  # noqa: E402
     casar_produtos_vendedores,
     casar_vendedores,
+    normalizar_nome_match,
     parse_relatorio_produtos_pdf,
     parse_relatorio_vendas_pdf,
 )
@@ -446,10 +447,73 @@ def abrir_aba_totais_de_vendas(page, context):
     return aba
 
 
-def _sincronizar_vendas_diarias(loja, dia, pdf_bytes):
+def _acumulado_por_nome(pdf_bytes):
+    """{nome normalizado: (t_liq, n_ped)} de um PDF 'Totais de Vendas'."""
+    if not pdf_bytes:
+        return {}
+    r = parse_relatorio_vendas_pdf(pdf_bytes)
+    return {normalizar_nome_match(l["nome_pdf"]): (l["t_liq"], l["n_ped"]) for l in r["linhas"]}
+
+
+def _totais_produtos_por_nome(pdf_bytes):
+    """{nome normalizado: soma do Valor Total} do PDF 'Por Produto' (referência
+    independente para validar o líquido do dia)."""
+    if not pdf_bytes:
+        return {}
+    tot = {}
+    for p in parse_relatorio_produtos_pdf(pdf_bytes)["produtos"]:
+        nome = normalizar_nome_match(p.get("vendedor_nome_pdf") or "")
+        tot[nome] = tot.get(nome, 0.0) + float(p.get("valor_total") or 0.0)
+    return tot
+
+
+def _valores_do_dia(linhas, pdf_anterior, ref_produtos):
+    """Devolve {nome normalizado: (valor, pedidos, origem)} do dia.
+
+    O SGI pode devolver o 'Totais de Vendas' de um dia como ACUMULADO (histórico
+    até aquele dia) em vez do valor do dia — foi o que inflou Gleicia/Jadila/Luan.
+    Por isso: (1) compara 'valor bruto do PDF' e 'PDF do dia - PDF do dia anterior'
+    com o total do relatório por produto do mesmo dia e usa o modo que bate; (2) se
+    nenhum bate, grava o total por produto (e avisa), nunca um valor inflado."""
+    prev = _acumulado_por_nome(pdf_anterior)
+    ref = ref_produtos or {}
+    chave = lambda l: normalizar_nome_match(l["nome_pdf"])
+    comparaveis = [l for l in linhas if ref.get(chave(l), 0) > 200]
+    modo = "bruto"
+    if prev and comparaveis:
+        err_bruto = sum(abs(l["t_liq"] - ref[chave(l)]) for l in comparaveis)
+        err_dif = sum(abs(l["t_liq"] - prev.get(chave(l), (0.0, 0))[0] - ref[chave(l)]) for l in comparaveis)
+        if err_dif < err_bruto:
+            modo = "diferenca"
+    out = {}
+    for l in linhas:
+        k = chave(l)
+        v, q = l["t_liq"], l["n_ped"]
+        if modo == "diferenca":
+            pv, pq = prev.get(k, (0.0, 0))
+            v, q = v - pv, q - pq
+        r = ref.get(k)
+        origem = modo
+        if r is not None and abs(v - r) > max(50.0, 0.25 * r):
+            print(f"  [aviso] {l['nome_pdf']}: valor do relatório (R$ {v:,.2f}, modo {modo}) não bate com o "
+                  f"total por produto (R$ {r:,.2f}); gravando o total por produto.")
+            v, origem = r, "produto"
+            q = max(q, 1) if q > 0 else q
+        elif r is None and modo == "bruto" and prev:
+            pv = prev.get(k, (0.0, 0))[0]
+            if v > 0 and abs(v - pv) < 0.005:  # sem vendas no dia: repete o acumulado
+                continue
+        if v < 0 or q < 0:
+            continue
+        out[k] = (v, q, origem)
+    return out, modo
+
+
+def _sincronizar_vendas_diarias(loja, dia, pdf_bytes, pdf_anterior=None, ref_produtos=None):
     """Grava em vendas_diarias o T. LIQ. (líquido) e o Nº Ped REAIS de cada
     vendedor, vindos do relatório 'Totais de Vendas'. É a fonte oficial do
-    Realizado/Pedidos do painel."""
+    Realizado/Pedidos do painel. Valida o valor contra o relatório por produto do
+    mesmo dia e converte relatório acumulado em valor do dia (ver _valores_do_dia)."""
     resultado = parse_relatorio_vendas_pdf(pdf_bytes)
     if not resultado["linhas"]:
         with open(f"debug_{loja.replace(' ', '_')}_vendas_pdf_vazio.pdf", "wb") as f:
@@ -465,13 +529,20 @@ def _sincronizar_vendas_diarias(loja, dia, pdf_bytes):
         print(f"[{loja}] Ignorados em 'Totais de Vendas' (sem correspondência no cadastro): "
               + ", ".join(nao_encontrados))
 
+    valores, modo = _valores_do_dia(resultado["linhas"], pdf_anterior, ref_produtos)
+    total, gravados = 0.0, 0
     for item in matched:
-        db.upsert_venda(item["vendedor_id"], dia, float(item["t_liq"]), int(item["n_ped"]))
+        k = normalizar_nome_match(item["nome"])
+        if k not in valores:
+            continue
+        v, q, _origem = valores[k]
+        db.upsert_venda(item["vendedor_id"], dia, float(v), int(q))
+        total += v
+        gravados += 1
 
-    total = sum(i["t_liq"] for i in matched)
-    print(f"[{loja}] {dia:%d/%m/%Y}: {len(matched)} vendedor(es) — líquido R$ {total:,.2f} "
-          "(vendas_diarias atualizado a partir de 'Totais de Vendas').")
-    return len(matched)
+    print(f"[{loja}] {dia:%d/%m/%Y}: {gravados} vendedor(es) — líquido R$ {total:,.2f} "
+          f"(modo {modo}; vendas_diarias atualizado a partir de 'Totais de Vendas').")
+    return gravados
 
 
 def _sincronizar_vendas_produtos(loja, dia, pdf_bytes):
@@ -520,32 +591,56 @@ def sincronizar_loja(playwright, loja, datas, headed=False):
         aba_vendas = abrir_aba_totais_de_vendas(page, context)
         navegar_ate_totais_de_vendas_por_produto(page)
 
+        cache_pdf = {}
+
+        def _pdf_vendas(d):
+            if d not in cache_pdf:
+                cache_pdf[d] = gerar_pdf_totais_de_vendas(
+                    aba_vendas, context, empresa_texto, d.strftime("%d/%m/%Y"), d.strftime("%d/%m/%Y"), loja=loja
+                )
+            return cache_pdf[d]
+
         for dia in datas:
             data_str = dia.strftime("%d/%m/%Y")
             sufixo = dia.strftime("%Y%m%d")
             print(f"[{loja}] Sincronizando {data_str}...")
 
+            pdf_vendas = pdf_anterior = pdf_produtos = None
             try:
-                pdf_vendas = gerar_pdf_totais_de_vendas(
-                    aba_vendas, context, empresa_texto, data_str, data_str, loja=loja
-                )
+                pdf_vendas = _pdf_vendas(dia)
                 with open(f"debug_{loja.replace(' ', '_')}_vendas_{sufixo}.pdf", "wb") as f:
                     f.write(pdf_vendas)
-                _sincronizar_vendas_diarias(loja, dia, pdf_vendas)
             except Exception as e:
                 _salvar_debug(aba_vendas, loja, f"erro_vendas_{sufixo}")
                 erros.append(f"{loja} {data_str} (Totais de Vendas): {e}")
                 print(f"[{loja}] ERRO em 'Totais de Vendas' {data_str}: {e}")
-
+            try:
+                pdf_anterior = _pdf_vendas(dia - timedelta(days=1))  # base p/ converter acumulado em diário
+            except Exception as e:
+                print(f"[{loja}] aviso: não obtive o relatório do dia anterior ({e}).")
             try:
                 pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
                 with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
                     f.write(pdf_produtos)
-                _sincronizar_vendas_produtos(loja, dia, pdf_produtos)
             except Exception as e:
                 _salvar_debug(page, loja, f"erro_produtos_{sufixo}")
                 erros.append(f"{loja} {data_str} (Por Produto): {e}")
                 print(f"[{loja}] ERRO em 'Por Produto' {data_str}: {e}")
+
+            if pdf_vendas is not None:
+                try:
+                    ref = _totais_produtos_por_nome(pdf_produtos) if pdf_produtos else None
+                    _sincronizar_vendas_diarias(loja, dia, pdf_vendas, pdf_anterior, ref)
+                except Exception as e:
+                    erros.append(f"{loja} {data_str} (gravar vendas): {e}")
+                    print(f"[{loja}] ERRO ao gravar vendas {data_str}: {e}")
+            if pdf_produtos is not None:
+                try:
+                    _sincronizar_vendas_produtos(loja, dia, pdf_produtos)
+                except Exception as e:
+                    erros.append(f"{loja} {data_str} (gravar produtos): {e}")
+                    print(f"[{loja}] ERRO ao gravar produtos {data_str}: {e}")
+            cache_pdf.pop(dia - timedelta(days=1), None)
     finally:
         browser.close()
 
