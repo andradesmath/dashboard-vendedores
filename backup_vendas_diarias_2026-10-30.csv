@@ -1,0 +1,698 @@
+id,vendedor_id,nome,data,valor_realizado,qtd_pedidos,loja
+8282,13,Adriely,2026-09-01,2636.30,44,Casa de Adubo
+8321,13,Adriely,2026-09-02,4937.78,69,Casa de Adubo
+8347,13,Adriely,2026-09-03,2174.74,22,Casa de Adubo
+8431,13,Adriely,2026-09-04,3392.01,30,Casa de Adubo
+8470,13,Adriely,2026-09-05,6506.84,51,Casa de Adubo
+8496,13,Adriely,2026-09-08,7621.14,58,Casa de Adubo
+8522,13,Adriely,2026-09-09,8691.98,57,Casa de Adubo
+8548,13,Adriely,2026-09-10,5872.48,52,Casa de Adubo
+8574,13,Adriely,2026-09-11,14202.90,47,Casa de Adubo
+8600,13,Adriely,2026-09-12,23978.30,45,Casa de Adubo
+8639,13,Adriely,2026-09-14,10605.64,54,Casa de Adubo
+8652,13,Adriely,2026-09-15,5673.04,53,Casa de Adubo
+8687,13,Adriely,2026-09-16,2751.75,51,Casa de Adubo
+8734,13,Adriely,2026-09-17,4373.28,34,Casa de Adubo
+8932,13,Adriely,2026-09-18,4387.65,40,Casa de Adubo
+8973,13,Adriely,2026-09-19,7029.12,39,Casa de Adubo
+9001,13,Adriely,2026-09-21,5853.36,58,Casa de Adubo
+9022,13,Adriely,2026-09-22,2975.55,49,Casa de Adubo
+9092,13,Adriely,2026-09-23,4606.11,29,Casa de Adubo
+9106,13,Adriely,2026-09-24,3607.15,17,Casa de Adubo
+9381,13,Adriely,2026-09-25,4030.79,38,Casa de Adubo
+9388,13,Adriely,2026-09-26,3764.15,42,Casa de Adubo
+9403,13,Adriely,2026-09-28,3749.40,32,Casa de Adubo
+9412,13,Adriely,2026-09-29,4676.65,39,Casa de Adubo
+9439,13,Adriely,2026-09-30,8132.24,30,Casa de Adubo
+9811,13,Adriely,2026-10-01,3589.94,19,Casa de Adubo
+9838,13,Adriely,2026-10-02,2303.27,35,Casa de Adubo
+9852,13,Adriely,2026-10-03,3232.90,54,Casa de Adubo
+9866,13,Adriely,2026-10-05,2586.22,52,Casa de Adubo
+9880,13,Adriely,2026-10-06,6242.61,50,Casa de Adubo
+9894,13,Adriely,2026-10-07,8104.55,48,Casa de Adubo
+9908,13,Adriely,2026-10-08,4500.02,46,Casa de Adubo
+9922,13,Adriely,2026-10-09,7080.00,22,Casa de Adubo
+9936,13,Adriely,2026-10-10,5311.80,70,Casa de Adubo
+9950,13,Adriely,2026-10-13,14171.08,58,Casa de Adubo
+9964,13,Adriely,2026-10-14,7679.73,18,Casa de Adubo
+9978,13,Adriely,2026-10-15,5533.17,19,Casa de Adubo
+10020,13,Adriely,2026-10-16,6758.19,19,Casa de Adubo
+10034,13,Adriely,2026-10-17,5197.60,44,Casa de Adubo
+10062,13,Adriely,2026-10-19,9306.16,39,Casa de Adubo
+10090,13,Adriely,2026-10-20,1309.22,22,Casa de Adubo
+10104,13,Adriely,2026-10-21,12423.29,34,Casa de Adubo
+10132,13,Adriely,2026-10-22,4278.89,28,Casa de Adubo
+10160,13,Adriely,2026-10-23,15616.07,30,Casa de Adubo
+10174,13,Adriely,2026-10-24,4908.31,33,Casa de Adubo
+10202,13,Adriely,2026-10-26,5613.54,25,Casa de Adubo
+10216,13,Adriely,2026-10-27,22317.72,32,Casa de Adubo
+10230,13,Adriely,2026-10-28,11124.85,40,Casa de Adubo
+10258,13,Adriely,2026-10-29,2018.43,21,Casa de Adubo
+8274,7,Elizangela Batista,2026-09-01,1469.73,33,Porteira
+8313,7,Elizangela Batista,2026-09-02,3485.21,49,Porteira
+8339,7,Elizangela Batista,2026-09-03,1560.19,29,Porteira
+8423,7,Elizangela Batista,2026-09-04,4858.11,63,Porteira
+8462,7,Elizangela Batista,2026-09-05,3993.85,97,Porteira
+8488,7,Elizangela Batista,2026-09-08,4938.24,78,Porteira
+8514,7,Elizangela Batista,2026-09-09,10657.07,88,Porteira
+8540,7,Elizangela Batista,2026-09-10,3728.67,71,Porteira
+8566,7,Elizangela Batista,2026-09-11,6173.81,79,Porteira
+8592,7,Elizangela Batista,2026-09-12,4633.27,72,Porteira
+8631,7,Elizangela Batista,2026-09-14,2497.00,42,Porteira
+8644,7,Elizangela Batista,2026-09-15,3910.51,42,Porteira
+8680,7,Elizangela Batista,2026-09-16,1095.03,21,Porteira
+8727,7,Elizangela Batista,2026-09-17,8145.02,44,Porteira
+8839,7,Elizangela Batista,2026-09-18,3003.58,48,Porteira
+8965,7,Elizangela Batista,2026-09-19,5662.44,57,Porteira
+8993,7,Elizangela Batista,2026-09-21,12842.36,93,Porteira
+9007,7,Elizangela Batista,2026-09-22,6516.95,78,Porteira
+9084,7,Elizangela Batista,2026-09-23,4506.84,53,Porteira
+9098,7,Elizangela Batista,2026-09-24,4670.31,60,Porteira
+9240,7,Elizangela Batista,2026-09-25,3015.01,50,Porteira
+9247,7,Elizangela Batista,2026-09-26,4038.27,62,Porteira
+9395,7,Elizangela Batista,2026-09-28,4924.16,74,Porteira
+9418,7,Elizangela Batista,2026-09-29,4921.16,62,Porteira
+9432,7,Elizangela Batista,2026-09-30,11804.58,40,Porteira
+9632,7,Elizangela Batista,2026-10-01,5441.65,37,Porteira
+9830,7,Elizangela Batista,2026-10-02,4793.04,66,Porteira
+9844,7,Elizangela Batista,2026-10-03,2945.46,83,Porteira
+9858,7,Elizangela Batista,2026-10-05,4308.75,69,Porteira
+9872,7,Elizangela Batista,2026-10-06,5392.04,59,Porteira
+9886,7,Elizangela Batista,2026-10-07,1988.16,60,Porteira
+9900,7,Elizangela Batista,2026-10-08,21551.08,68,Porteira
+9914,7,Elizangela Batista,2026-10-09,8245.33,68,Porteira
+9928,7,Elizangela Batista,2026-10-10,3510.71,77,Porteira
+9942,7,Elizangela Batista,2026-10-13,8070.91,55,Porteira
+9956,7,Elizangela Batista,2026-10-14,2454.30,35,Porteira
+9970,7,Elizangela Batista,2026-10-15,7995.70,27,Porteira
+10012,7,Elizangela Batista,2026-10-16,6362.70,48,Porteira
+10026,7,Elizangela Batista,2026-10-17,5269.40,58,Porteira
+10054,7,Elizangela Batista,2026-10-19,21846.46,57,Porteira
+10082,7,Elizangela Batista,2026-10-20,3579.58,43,Porteira
+10096,7,Elizangela Batista,2026-10-21,3100.37,43,Porteira
+10124,7,Elizangela Batista,2026-10-22,1816.34,34,Porteira
+10152,7,Elizangela Batista,2026-10-23,9516.74,62,Porteira
+10166,7,Elizangela Batista,2026-10-24,2086.40,49,Porteira
+10194,7,Elizangela Batista,2026-10-26,5032.10,43,Porteira
+10208,7,Elizangela Batista,2026-10-27,3701.47,28,Porteira
+10222,7,Elizangela Batista,2026-10-28,8351.41,41,Porteira
+10250,7,Elizangela Batista,2026-10-29,8023.34,35,Porteira
+8277,6,Felipe,2026-09-01,3730.10,63,Porteira
+8316,6,Felipe,2026-09-02,11746.27,53,Porteira
+8342,6,Felipe,2026-09-03,1992.74,39,Porteira
+8426,6,Felipe,2026-09-04,5945.32,100,Porteira
+8465,6,Felipe,2026-09-05,4043.33,60,Porteira
+8491,6,Felipe,2026-09-08,5733.71,79,Porteira
+8517,6,Felipe,2026-09-09,9566.03,65,Porteira
+8543,6,Felipe,2026-09-10,3758.17,41,Porteira
+8569,6,Felipe,2026-09-11,9462.04,77,Porteira
+8595,6,Felipe,2026-09-12,2056.74,67,Porteira
+8634,6,Felipe,2026-09-14,10351.13,71,Porteira
+8647,6,Felipe,2026-09-15,2325.80,34,Porteira
+8682,6,Felipe,2026-09-16,4580.64,52,Porteira
+8729,6,Felipe,2026-09-17,2213.84,42,Porteira
+8841,6,Felipe,2026-09-18,4044.44,68,Porteira
+8967,6,Felipe,2026-09-19,9394.25,61,Porteira
+8995,6,Felipe,2026-09-21,8781.80,58,Porteira
+9009,6,Felipe,2026-09-22,1835.76,32,Porteira
+9086,6,Felipe,2026-09-23,1551.88,46,Porteira
+9100,6,Felipe,2026-09-24,3181.67,43,Porteira
+9242,6,Felipe,2026-09-25,5727.15,79,Porteira
+9249,6,Felipe,2026-09-26,6970.17,73,Porteira
+9397,6,Felipe,2026-09-28,4299.15,52,Porteira
+9420,6,Felipe,2026-09-29,4397.73,71,Porteira
+9434,6,Felipe,2026-09-30,3892.97,72,Porteira
+9634,6,Felipe,2026-10-01,1035.26,27,Porteira
+9832,6,Felipe,2026-10-02,2337.87,54,Porteira
+9846,6,Felipe,2026-10-03,5836.08,74,Porteira
+9860,6,Felipe,2026-10-05,2925.88,46,Porteira
+9874,6,Felipe,2026-10-06,3294.88,44,Porteira
+9888,6,Felipe,2026-10-07,6554.52,51,Porteira
+9902,6,Felipe,2026-10-08,14707.99,37,Porteira
+9916,6,Felipe,2026-10-09,5068.42,59,Porteira
+9930,6,Felipe,2026-10-10,6649.41,82,Porteira
+9944,6,Felipe,2026-10-13,8462.79,78,Porteira
+9958,6,Felipe,2026-10-14,5217.15,44,Porteira
+9972,6,Felipe,2026-10-15,4893.90,44,Porteira
+10014,6,Felipe,2026-10-16,3969.72,34,Porteira
+10028,6,Felipe,2026-10-17,5054.67,72,Porteira
+10056,6,Felipe,2026-10-19,5075.53,53,Porteira
+10084,6,Felipe,2026-10-20,1670.30,35,Porteira
+10098,6,Felipe,2026-10-21,5069.66,53,Porteira
+10126,6,Felipe,2026-10-22,3946.05,47,Porteira
+10154,6,Felipe,2026-10-23,3756.10,53,Porteira
+10168,6,Felipe,2026-10-24,4684.36,99,Porteira
+10196,6,Felipe,2026-10-26,2672.24,32,Porteira
+10210,6,Felipe,2026-10-27,2545.08,35,Porteira
+10224,6,Felipe,2026-10-28,1521.50,31,Porteira
+10252,6,Felipe,2026-10-29,5262.23,72,Porteira
+8276,8,Gleicia,2026-09-01,6533.77,63,Porteira
+8315,8,Gleicia,2026-09-02,3976.24,54,Porteira
+8341,8,Gleicia,2026-09-03,3954.96,54,Porteira
+8425,8,Gleicia,2026-09-04,6036.68,86,Porteira
+8464,8,Gleicia,2026-09-05,4176.00,112,Porteira
+8490,8,Gleicia,2026-09-08,7998.77,98,Porteira
+8516,8,Gleicia,2026-09-09,5082.56,98,Porteira
+8542,8,Gleicia,2026-09-10,4860.30,56,Porteira
+8568,8,Gleicia,2026-09-11,4521.12,105,Porteira
+8594,8,Gleicia,2026-09-12,12617.48,112,Porteira
+8633,8,Gleicia,2026-09-14,4312.84,82,Porteira
+8646,8,Gleicia,2026-09-15,315.50,5,Casa de Adubo
+8723,8,Gleicia,2026-09-16,2482.51,37,Casa de Adubo
+8735,8,Gleicia,2026-09-17,3507.20,43,Casa de Adubo
+8933,8,Gleicia,2026-09-18,9667.86,61,Casa de Adubo
+8974,8,Gleicia,2026-09-19,2578.44,29,Casa de Adubo
+9002,8,Gleicia,2026-09-21,7264.28,62,Casa de Adubo
+9023,8,Gleicia,2026-09-22,4372.09,48,Casa de Adubo
+9093,8,Gleicia,2026-09-23,1435.22,41,Casa de Adubo
+9107,8,Gleicia,2026-09-24,11073.87,63,Casa de Adubo
+9382,8,Gleicia,2026-09-25,4984.42,72,Casa de Adubo
+9389,8,Gleicia,2026-09-26,3709.75,40,Casa de Adubo
+9404,8,Gleicia,2026-09-28,6798.23,52,Casa de Adubo
+9413,8,Gleicia,2026-09-29,6388.78,62,Casa de Adubo
+9440,8,Gleicia,2026-09-30,7141.28,41,Casa de Adubo
+9800,8,Gleicia,2026-10-01,73962.67,355,Casa de Adubo
+9839,8,Gleicia,2026-10-02,80492.98,384,Casa de Adubo
+9853,8,Gleicia,2026-10-03,88714.80,414,Casa de Adubo
+10293,8,Gleicia,2026-10-04,88714.80,414,Casa de Adubo
+9867,8,Gleicia,2026-10-05,90597.52,427,Casa de Adubo
+9881,8,Gleicia,2026-10-06,94821.07,450,Casa de Adubo
+9895,8,Gleicia,2026-10-07,98112.69,466,Casa de Adubo
+9909,8,Gleicia,2026-10-08,101085.11,480,Casa de Adubo
+9923,8,Gleicia,2026-10-09,110545.26,505,Casa de Adubo
+9937,8,Gleicia,2026-10-10,117236.14,534,Casa de Adubo
+10307,8,Gleicia,2026-10-11,117236.14,534,Casa de Adubo
+10309,8,Gleicia,2026-10-12,117236.14,534,Casa de Adubo
+9951,8,Gleicia,2026-10-13,130388.17,563,Casa de Adubo
+9965,8,Gleicia,2026-10-14,135273.30,585,Casa de Adubo
+9979,8,Gleicia,2026-10-15,140491.36,608,Casa de Adubo
+10021,8,Gleicia,2026-10-16,150345.59,629,Casa de Adubo
+10035,8,Gleicia,2026-10-17,157018.64,660,Casa de Adubo
+10321,8,Gleicia,2026-10-18,157018.64,660,Casa de Adubo
+10063,8,Gleicia,2026-10-19,161054.96,694,Casa de Adubo
+10091,8,Gleicia,2026-10-20,167992.98,721,Casa de Adubo
+10105,8,Gleicia,2026-10-21,172347.80,750,Casa de Adubo
+10133,8,Gleicia,2026-10-22,178785.12,776,Casa de Adubo
+10161,8,Gleicia,2026-10-23,189518.85,798,Casa de Adubo
+10175,8,Gleicia,2026-10-24,195787.10,813,Casa de Adubo
+10334,8,Gleicia,2026-10-25,195787.10,813,Casa de Adubo
+10203,8,Gleicia,2026-10-26,204891.00,838,Casa de Adubo
+10217,8,Gleicia,2026-10-27,213896.92,854,Casa de Adubo
+10231,8,Gleicia,2026-10-28,220811.92,872,Casa de Adubo
+10259,8,Gleicia,2026-10-29,231114.84,902,Casa de Adubo
+10339,8,Gleicia,2026-10-30,231114.84,902,Casa de Adubo
+8273,9,Igor Silva,2026-09-01,3600.15,78,Porteira
+8312,9,Igor Silva,2026-09-02,2651.61,77,Porteira
+8338,9,Igor Silva,2026-09-03,6685.12,60,Porteira
+8422,9,Igor Silva,2026-09-04,5165.47,95,Porteira
+8461,9,Igor Silva,2026-09-05,4125.33,90,Porteira
+8487,9,Igor Silva,2026-09-08,9805.47,112,Porteira
+8513,9,Igor Silva,2026-09-09,15167.87,81,Porteira
+8539,9,Igor Silva,2026-09-10,3224.36,53,Porteira
+8565,9,Igor Silva,2026-09-11,6538.09,74,Porteira
+8591,9,Igor Silva,2026-09-12,3389.85,93,Porteira
+8630,9,Igor Silva,2026-09-14,4432.55,97,Porteira
+8643,9,Igor Silva,2026-09-15,5569.47,72,Porteira
+8679,9,Igor Silva,2026-09-16,3987.66,71,Porteira
+8726,9,Igor Silva,2026-09-17,3555.59,58,Porteira
+8838,9,Igor Silva,2026-09-18,14017.68,82,Porteira
+8964,9,Igor Silva,2026-09-19,3656.85,96,Porteira
+8992,9,Igor Silva,2026-09-21,3043.87,86,Porteira
+9006,9,Igor Silva,2026-09-22,4876.21,68,Porteira
+9083,9,Igor Silva,2026-09-23,2060.12,49,Porteira
+9097,9,Igor Silva,2026-09-24,2155.40,37,Porteira
+9239,9,Igor Silva,2026-09-25,4756.04,82,Porteira
+9246,9,Igor Silva,2026-09-26,3731.56,100,Porteira
+9394,9,Igor Silva,2026-09-28,2627.71,83,Porteira
+9417,9,Igor Silva,2026-09-29,4803.94,116,Porteira
+9431,9,Igor Silva,2026-09-30,3827.10,87,Porteira
+9631,9,Igor Silva,2026-10-01,4995.31,58,Porteira
+9829,9,Igor Silva,2026-10-02,4896.62,84,Porteira
+9843,9,Igor Silva,2026-10-03,6342.04,74,Porteira
+9857,9,Igor Silva,2026-10-05,18847.16,100,Porteira
+9871,9,Igor Silva,2026-10-06,6113.24,100,Porteira
+9885,9,Igor Silva,2026-10-07,5575.08,57,Porteira
+9899,9,Igor Silva,2026-10-08,6247.55,64,Porteira
+9913,9,Igor Silva,2026-10-09,3453.58,58,Porteira
+9927,9,Igor Silva,2026-10-10,13660.20,100,Porteira
+9941,9,Igor Silva,2026-10-13,5498.55,64,Porteira
+9955,9,Igor Silva,2026-10-14,1542.73,49,Porteira
+9969,9,Igor Silva,2026-10-15,3292.49,62,Porteira
+10011,9,Igor Silva,2026-10-16,6232.05,60,Porteira
+10025,9,Igor Silva,2026-10-17,4814.62,68,Porteira
+10053,9,Igor Silva,2026-10-19,4060.24,66,Porteira
+10081,9,Igor Silva,2026-10-20,5837.24,46,Porteira
+10095,9,Igor Silva,2026-10-21,3997.25,65,Porteira
+10123,9,Igor Silva,2026-10-22,2370.63,31,Porteira
+10151,9,Igor Silva,2026-10-23,6929.15,67,Porteira
+10165,9,Igor Silva,2026-10-24,6772.67,85,Porteira
+10193,9,Igor Silva,2026-10-26,7475.17,65,Porteira
+10207,9,Igor Silva,2026-10-27,3602.36,38,Porteira
+10221,9,Igor Silva,2026-10-28,4653.33,68,Porteira
+10249,9,Igor Silva,2026-10-29,2251.23,49,Porteira
+8283,14,Jadila,2026-09-01,4824.03,82,Casa de Adubo
+8322,14,Jadila,2026-09-02,6356.22,61,Casa de Adubo
+8348,14,Jadila,2026-09-03,5825.39,53,Casa de Adubo
+8432,14,Jadila,2026-09-04,12515.82,61,Casa de Adubo
+8471,14,Jadila,2026-09-05,6775.73,44,Casa de Adubo
+8497,14,Jadila,2026-09-08,9594.75,101,Casa de Adubo
+8523,14,Jadila,2026-09-09,11278.98,68,Casa de Adubo
+8549,14,Jadila,2026-09-10,6239.92,74,Casa de Adubo
+8575,14,Jadila,2026-09-11,5806.86,95,Casa de Adubo
+8601,14,Jadila,2026-09-12,8372.59,71,Casa de Adubo
+8640,14,Jadila,2026-09-14,4536.68,55,Casa de Adubo
+8705,14,Jadila,2026-09-15,5443.58,99,Porteira
+8717,14,Jadila,2026-09-16,4039.95,86,Porteira
+8730,14,Jadila,2026-09-17,3554.95,64,Porteira
+8842,14,Jadila,2026-09-18,2945.99,59,Porteira
+8968,14,Jadila,2026-09-19,6480.08,81,Porteira
+8996,14,Jadila,2026-09-21,7657.66,93,Porteira
+9010,14,Jadila,2026-09-22,4358.38,80,Porteira
+9087,14,Jadila,2026-09-23,4556.97,69,Porteira
+9101,14,Jadila,2026-09-24,2404.53,61,Porteira
+9243,14,Jadila,2026-09-25,4666.00,86,Porteira
+9250,14,Jadila,2026-09-26,4280.31,95,Porteira
+9398,14,Jadila,2026-09-28,4652.88,73,Porteira
+9421,14,Jadila,2026-09-29,3951.47,82,Porteira
+10274,14,Jadila,2026-10-01,59156.72,565,Porteira
+9833,14,Jadila,2026-10-02,64520.45,613,Porteira
+9847,14,Jadila,2026-10-03,69981.73,661,Porteira
+10277,14,Jadila,2026-10-04,69981.73,661,Porteira
+9861,14,Jadila,2026-10-05,74641.09,702,Porteira
+9875,14,Jadila,2026-10-06,79292.76,743,Porteira
+9889,14,Jadila,2026-10-07,86680.49,781,Porteira
+9903,14,Jadila,2026-10-08,91294.69,820,Porteira
+9917,14,Jadila,2026-10-09,96649.60,872,Porteira
+9931,14,Jadila,2026-10-10,100404.97,918,Porteira
+10284,14,Jadila,2026-10-11,100404.97,918,Porteira
+10285,14,Jadila,2026-10-12,100404.97,918,Porteira
+9945,14,Jadila,2026-10-13,108099.12,969,Porteira
+9959,14,Jadila,2026-10-14,5298.53,67,Porteira
+9973,14,Jadila,2026-10-15,5537.30,55,Porteira
+10015,14,Jadila,2026-10-16,9755.36,80,Porteira
+10029,14,Jadila,2026-10-17,5929.21,80,Porteira
+10057,14,Jadila,2026-10-19,6592.64,44,Porteira
+10085,14,Jadila,2026-10-20,4837.01,56,Porteira
+10099,14,Jadila,2026-10-21,2848.58,49,Porteira
+10127,14,Jadila,2026-10-22,1170.49,37,Porteira
+10155,14,Jadila,2026-10-23,10011.83,77,Porteira
+10169,14,Jadila,2026-10-24,6768.75,88,Porteira
+10197,14,Jadila,2026-10-26,8567.92,71,Porteira
+10211,14,Jadila,2026-10-27,13693.95,55,Porteira
+10225,14,Jadila,2026-10-28,10207.33,64,Porteira
+10253,14,Jadila,2026-10-29,5264.17,66,Porteira
+8281,16,Jesse,2026-09-01,6268.81,71,Casa de Adubo
+8320,16,Jesse,2026-09-02,6575.78,39,Casa de Adubo
+8346,16,Jesse,2026-09-03,8889.98,49,Casa de Adubo
+8430,16,Jesse,2026-09-04,5270.20,56,Casa de Adubo
+8469,16,Jesse,2026-09-05,5088.12,80,Casa de Adubo
+8495,16,Jesse,2026-09-08,13210.24,87,Casa de Adubo
+8521,16,Jesse,2026-09-09,7845.58,74,Casa de Adubo
+8547,16,Jesse,2026-09-10,4725.32,65,Casa de Adubo
+8573,16,Jesse,2026-09-11,9845.13,82,Casa de Adubo
+8599,16,Jesse,2026-09-12,6059.98,66,Casa de Adubo
+8638,16,Jesse,2026-09-14,3694.58,69,Casa de Adubo
+8651,16,Jesse,2026-09-15,7697.09,80,Casa de Adubo
+8686,16,Jesse,2026-09-16,3816.19,64,Casa de Adubo
+8733,16,Jesse,2026-09-17,6935.47,61,Casa de Adubo
+8931,16,Jesse,2026-09-18,20012.03,97,Casa de Adubo
+8972,16,Jesse,2026-09-19,7968.10,64,Casa de Adubo
+9000,16,Jesse,2026-09-21,8428.11,64,Casa de Adubo
+9021,16,Jesse,2026-09-22,5303.38,64,Casa de Adubo
+9091,16,Jesse,2026-09-23,10800.84,67,Casa de Adubo
+9105,16,Jesse,2026-09-24,7884.87,56,Casa de Adubo
+9380,16,Jesse,2026-09-25,4058.21,53,Casa de Adubo
+9387,16,Jesse,2026-09-26,6600.45,74,Casa de Adubo
+9402,16,Jesse,2026-09-28,9733.22,51,Casa de Adubo
+9411,16,Jesse,2026-09-29,8105.73,56,Casa de Adubo
+9438,16,Jesse,2026-09-30,6071.03,87,Casa de Adubo
+9799,16,Jesse,2026-10-01,5441.10,46,Casa de Adubo
+9837,16,Jesse,2026-10-02,23258.40,70,Casa de Adubo
+9851,16,Jesse,2026-10-03,8171.59,76,Casa de Adubo
+9865,16,Jesse,2026-10-05,6139.96,46,Casa de Adubo
+9879,16,Jesse,2026-10-06,8682.55,49,Casa de Adubo
+9893,16,Jesse,2026-10-07,12482.21,76,Casa de Adubo
+9907,16,Jesse,2026-10-08,7389.83,44,Casa de Adubo
+9921,16,Jesse,2026-10-09,9562.01,72,Casa de Adubo
+9935,16,Jesse,2026-10-10,7447.02,76,Casa de Adubo
+9949,16,Jesse,2026-10-13,12066.43,91,Casa de Adubo
+9963,16,Jesse,2026-10-14,2954.01,48,Casa de Adubo
+9977,16,Jesse,2026-10-15,7127.82,69,Casa de Adubo
+10019,16,Jesse,2026-10-16,12621.00,48,Casa de Adubo
+10033,16,Jesse,2026-10-17,8056.22,50,Casa de Adubo
+10061,16,Jesse,2026-10-19,10979.77,57,Casa de Adubo
+10089,16,Jesse,2026-10-20,3828.40,25,Casa de Adubo
+10103,16,Jesse,2026-10-21,7516.00,55,Casa de Adubo
+10131,16,Jesse,2026-10-22,4627.61,35,Casa de Adubo
+10159,16,Jesse,2026-10-23,8222.20,49,Casa de Adubo
+10173,16,Jesse,2026-10-24,6043.73,66,Casa de Adubo
+10201,16,Jesse,2026-10-26,9166.84,48,Casa de Adubo
+10215,16,Jesse,2026-10-27,39079.84,51,Casa de Adubo
+10229,16,Jesse,2026-10-28,19078.51,54,Casa de Adubo
+10257,16,Jesse,2026-10-29,12168.42,38,Casa de Adubo
+8848,24,Luan,2026-09-01,620.07,9,Casa de Adubo
+8854,24,Luan,2026-09-02,679.36,14,Casa de Adubo
+8860,24,Luan,2026-09-03,3330.54,9,Casa de Adubo
+8866,24,Luan,2026-09-04,2710.65,17,Casa de Adubo
+8872,24,Luan,2026-09-05,3296.50,27,Casa de Adubo
+8878,24,Luan,2026-09-08,3442.44,38,Casa de Adubo
+8884,24,Luan,2026-09-09,1501.06,23,Casa de Adubo
+8890,24,Luan,2026-09-10,1774.46,35,Casa de Adubo
+8896,24,Luan,2026-09-11,438.81,13,Casa de Adubo
+8902,24,Luan,2026-09-12,1619.90,22,Casa de Adubo
+8908,24,Luan,2026-09-14,3795.30,23,Casa de Adubo
+8914,24,Luan,2026-09-15,909.14,13,Casa de Adubo
+8921,24,Luan,2026-09-16,10300.03,39,Casa de Adubo
+8748,24,Luan,2026-09-17,1616.40,23,Casa de Adubo
+8947,24,Luan,2026-09-18,3033.90,25,Casa de Adubo
+8975,24,Luan,2026-09-19,1910.31,29,Casa de Adubo
+9003,24,Luan,2026-09-21,423.23,6,Casa de Adubo
+9024,24,Luan,2026-09-22,2743.48,22,Casa de Adubo
+9094,24,Luan,2026-09-23,1026.80,11,Casa de Adubo
+9383,24,Luan,2026-09-25,923.08,11,Casa de Adubo
+9390,24,Luan,2026-09-26,2337.41,20,Casa de Adubo
+9405,24,Luan,2026-09-28,705.39,16,Casa de Adubo
+9414,24,Luan,2026-09-29,292.00,4,Casa de Adubo
+9465,24,Luan,2026-09-30,2748.24,22,Casa de Adubo
+9813,24,Luan,2026-10-01,157180.62,813,Casa de Adubo
+9840,24,Luan,2026-10-02,158389.43,828,Casa de Adubo
+9854,24,Luan,2026-10-03,159165.48,838,Casa de Adubo
+10294,24,Luan,2026-10-04,159165.48,838,Casa de Adubo
+9868,24,Luan,2026-10-05,159839.90,844,Casa de Adubo
+9882,24,Luan,2026-10-06,165187.31,855,Casa de Adubo
+9896,24,Luan,2026-10-07,166273.71,864,Casa de Adubo
+9910,24,Luan,2026-10-08,167600.79,869,Casa de Adubo
+9924,24,Luan,2026-10-09,169627.15,876,Casa de Adubo
+9938,24,Luan,2026-10-10,171832.47,890,Casa de Adubo
+10308,24,Luan,2026-10-11,171832.47,890,Casa de Adubo
+10310,24,Luan,2026-10-12,171832.47,890,Casa de Adubo
+9952,24,Luan,2026-10-13,173563.57,901,Casa de Adubo
+9966,24,Luan,2026-10-14,175572.32,912,Casa de Adubo
+9980,24,Luan,2026-10-15,177118.31,919,Casa de Adubo
+10022,24,Luan,2026-10-16,181675.45,939,Casa de Adubo
+10036,24,Luan,2026-10-17,185598.89,952,Casa de Adubo
+10322,24,Luan,2026-10-18,185598.89,952,Casa de Adubo
+10064,24,Luan,2026-10-19,187687.10,963,Casa de Adubo
+10092,24,Luan,2026-10-20,190356.01,970,Casa de Adubo
+10106,24,Luan,2026-10-21,191451.48,981,Casa de Adubo
+10134,24,Luan,2026-10-22,192121.48,986,Casa de Adubo
+10162,24,Luan,2026-10-23,192453.47,991,Casa de Adubo
+10176,24,Luan,2026-10-24,939.74,23,Casa de Adubo
+10204,24,Luan,2026-10-26,506.86,6,Casa de Adubo
+10218,24,Luan,2026-10-27,608.61,16,Casa de Adubo
+10232,24,Luan,2026-10-28,478.00,6,Casa de Adubo
+10273,24,Luan,2026-10-29,285.43,4,Casa de Adubo
+8280,17,Naiara,2026-09-01,4468.28,58,Casa de Adubo
+8319,17,Naiara,2026-09-02,3535.59,32,Casa de Adubo
+8345,17,Naiara,2026-09-03,2283.73,31,Casa de Adubo
+8429,17,Naiara,2026-09-04,9361.37,30,Casa de Adubo
+8468,17,Naiara,2026-09-05,1955.00,29,Casa de Adubo
+8494,17,Naiara,2026-09-08,16707.23,59,Casa de Adubo
+8520,17,Naiara,2026-09-09,4515.82,28,Casa de Adubo
+8546,17,Naiara,2026-09-10,4976.80,37,Casa de Adubo
+8572,17,Naiara,2026-09-11,15347.34,51,Casa de Adubo
+8598,17,Naiara,2026-09-12,3659.17,61,Casa de Adubo
+8637,17,Naiara,2026-09-14,7922.08,36,Casa de Adubo
+8650,17,Naiara,2026-09-15,1988.09,28,Casa de Adubo
+8685,17,Naiara,2026-09-16,7197.65,37,Casa de Adubo
+8930,17,Naiara,2026-09-18,5846.37,30,Casa de Adubo
+8971,17,Naiara,2026-09-19,12345.56,43,Casa de Adubo
+8999,17,Naiara,2026-09-21,3596.72,60,Casa de Adubo
+9020,17,Naiara,2026-09-22,3025.69,31,Casa de Adubo
+9090,17,Naiara,2026-09-23,3645.80,33,Casa de Adubo
+9104,17,Naiara,2026-09-24,2274.04,28,Casa de Adubo
+9379,17,Naiara,2026-09-25,2104.65,35,Casa de Adubo
+9386,17,Naiara,2026-09-26,8865.09,49,Casa de Adubo
+9401,17,Naiara,2026-09-28,2307.56,35,Casa de Adubo
+9410,17,Naiara,2026-09-29,8150.58,64,Casa de Adubo
+9437,17,Naiara,2026-09-30,6325.96,47,Casa de Adubo
+9798,17,Naiara,2026-10-01,3018.03,36,Casa de Adubo
+9836,17,Naiara,2026-10-02,7223.73,53,Casa de Adubo
+9850,17,Naiara,2026-10-03,2085.12,29,Casa de Adubo
+9864,17,Naiara,2026-10-05,3445.12,36,Casa de Adubo
+9878,17,Naiara,2026-10-06,2826.66,37,Casa de Adubo
+9892,17,Naiara,2026-10-07,6111.87,33,Casa de Adubo
+9906,17,Naiara,2026-10-08,1815.70,28,Casa de Adubo
+9920,17,Naiara,2026-10-09,1558.35,21,Casa de Adubo
+9934,17,Naiara,2026-10-10,5811.42,54,Casa de Adubo
+9948,17,Naiara,2026-10-13,4477.41,37,Casa de Adubo
+9962,17,Naiara,2026-10-14,11828.68,41,Casa de Adubo
+9976,17,Naiara,2026-10-15,5323.43,16,Casa de Adubo
+10018,17,Naiara,2026-10-16,5604.75,21,Casa de Adubo
+10032,17,Naiara,2026-10-17,9564.29,9,Casa de Adubo
+10060,17,Naiara,2026-10-19,1627.47,27,Casa de Adubo
+10088,17,Naiara,2026-10-20,7979.95,62,Casa de Adubo
+10102,17,Naiara,2026-10-21,6512.20,23,Casa de Adubo
+10130,17,Naiara,2026-10-22,1446.59,24,Casa de Adubo
+10158,17,Naiara,2026-10-23,3034.97,53,Casa de Adubo
+10172,17,Naiara,2026-10-24,6146.86,31,Casa de Adubo
+10200,17,Naiara,2026-10-26,2992.02,14,Casa de Adubo
+10214,17,Naiara,2026-10-27,10916.02,38,Casa de Adubo
+10228,17,Naiara,2026-10-28,27530.29,60,Casa de Adubo
+10256,17,Naiara,2026-10-29,1574.10,21,Casa de Adubo
+8278,20,Poliane,2026-09-01,25216.87,69,Casa de Adubo
+8317,20,Poliane,2026-09-02,13707.42,50,Casa de Adubo
+8343,20,Poliane,2026-09-03,3694.74,45,Casa de Adubo
+8427,20,Poliane,2026-09-04,6401.11,93,Casa de Adubo
+8466,20,Poliane,2026-09-05,4030.68,49,Casa de Adubo
+9391,20,Poliane,2026-09-07,2187.58,2,Casa de Adubo
+8492,20,Poliane,2026-09-08,12090.08,52,Casa de Adubo
+8518,20,Poliane,2026-09-09,4724.33,52,Casa de Adubo
+8544,20,Poliane,2026-09-10,10674.57,43,Casa de Adubo
+8570,20,Poliane,2026-09-11,4121.61,38,Casa de Adubo
+8596,20,Poliane,2026-09-12,4992.98,49,Casa de Adubo
+8635,20,Poliane,2026-09-14,3340.91,47,Casa de Adubo
+8648,20,Poliane,2026-09-15,5742.35,71,Casa de Adubo
+8683,20,Poliane,2026-09-16,13480.11,46,Casa de Adubo
+8731,20,Poliane,2026-09-17,7479.11,64,Casa de Adubo
+8928,20,Poliane,2026-09-18,23428.91,84,Casa de Adubo
+8969,20,Poliane,2026-09-19,5057.06,43,Casa de Adubo
+8997,20,Poliane,2026-09-21,7119.22,64,Casa de Adubo
+9018,20,Poliane,2026-09-22,3616.03,37,Casa de Adubo
+9088,20,Poliane,2026-09-23,11511.52,37,Casa de Adubo
+9102,20,Poliane,2026-09-24,2593.98,40,Casa de Adubo
+9377,20,Poliane,2026-09-25,7294.13,41,Casa de Adubo
+9384,20,Poliane,2026-09-26,1329.72,3,Casa de Adubo
+9399,20,Poliane,2026-09-28,11697.61,40,Casa de Adubo
+9408,20,Poliane,2026-09-29,7649.77,64,Casa de Adubo
+9435,20,Poliane,2026-09-30,7935.39,44,Casa de Adubo
+9796,20,Poliane,2026-10-01,5982.42,71,Casa de Adubo
+9834,20,Poliane,2026-10-02,5047.58,77,Casa de Adubo
+9848,20,Poliane,2026-10-03,3429.40,23,Casa de Adubo
+9862,20,Poliane,2026-10-05,4201.81,45,Casa de Adubo
+9876,20,Poliane,2026-10-06,4455.57,37,Casa de Adubo
+9890,20,Poliane,2026-10-07,7343.68,86,Casa de Adubo
+9904,20,Poliane,2026-10-08,2710.21,33,Casa de Adubo
+9918,20,Poliane,2026-10-09,14207.92,36,Casa de Adubo
+9932,20,Poliane,2026-10-10,7717.28,54,Casa de Adubo
+9946,20,Poliane,2026-10-13,11247.10,63,Casa de Adubo
+9960,20,Poliane,2026-10-14,5660.50,56,Casa de Adubo
+9974,20,Poliane,2026-10-15,29553.00,54,Casa de Adubo
+10016,20,Poliane,2026-10-16,5488.40,32,Casa de Adubo
+10030,20,Poliane,2026-10-17,6274.52,53,Casa de Adubo
+10058,20,Poliane,2026-10-19,3672.73,52,Casa de Adubo
+10086,20,Poliane,2026-10-20,3776.17,35,Casa de Adubo
+10100,20,Poliane,2026-10-21,5037.08,51,Casa de Adubo
+10128,20,Poliane,2026-10-22,4511.23,38,Casa de Adubo
+10156,20,Poliane,2026-10-23,2910.89,40,Casa de Adubo
+10170,20,Poliane,2026-10-24,8434.71,66,Casa de Adubo
+10198,20,Poliane,2026-10-26,4071.80,17,Casa de Adubo
+10212,20,Poliane,2026-10-27,12420.50,39,Casa de Adubo
+10226,20,Poliane,2026-10-28,19208.91,68,Casa de Adubo
+10254,20,Poliane,2026-10-29,15940.37,56,Casa de Adubo
+8272,10,Renata Ribeiro,2026-09-01,3002.47,40,Porteira
+8311,10,Renata Ribeiro,2026-09-02,8940.34,44,Porteira
+8337,10,Renata Ribeiro,2026-09-03,4623.51,31,Porteira
+8421,10,Renata Ribeiro,2026-09-04,12836.36,66,Porteira
+8460,10,Renata Ribeiro,2026-09-05,4506.08,26,Porteira
+8486,10,Renata Ribeiro,2026-09-08,9395.51,102,Porteira
+8512,10,Renata Ribeiro,2026-09-09,4601.15,86,Porteira
+8538,10,Renata Ribeiro,2026-09-10,9217.44,61,Porteira
+8564,10,Renata Ribeiro,2026-09-11,19581.86,78,Porteira
+8590,10,Renata Ribeiro,2026-09-12,7975.56,82,Porteira
+8629,10,Renata Ribeiro,2026-09-14,10661.61,67,Porteira
+8642,10,Renata Ribeiro,2026-09-15,8072.82,51,Porteira
+8678,10,Renata Ribeiro,2026-09-16,3806.38,40,Porteira
+8725,10,Renata Ribeiro,2026-09-17,15534.27,55,Porteira
+8837,10,Renata Ribeiro,2026-09-18,8745.04,83,Porteira
+8963,10,Renata Ribeiro,2026-09-19,6755.28,71,Porteira
+8991,10,Renata Ribeiro,2026-09-21,15431.54,76,Porteira
+9005,10,Renata Ribeiro,2026-09-22,29171.30,61,Porteira
+9082,10,Renata Ribeiro,2026-09-23,3247.73,37,Porteira
+9096,10,Renata Ribeiro,2026-09-24,9413.21,37,Porteira
+9238,10,Renata Ribeiro,2026-09-25,17980.21,74,Porteira
+9245,10,Renata Ribeiro,2026-09-26,4856.74,74,Porteira
+9393,10,Renata Ribeiro,2026-09-28,5170.49,34,Porteira
+9407,10,Renata Ribeiro,2026-09-29,3510.90,51,Porteira
+9430,10,Renata Ribeiro,2026-09-30,15204.81,68,Porteira
+9630,10,Renata Ribeiro,2026-10-01,21654.97,45,Porteira
+9828,10,Renata Ribeiro,2026-10-02,5457.66,59,Porteira
+9842,10,Renata Ribeiro,2026-10-03,2347.31,58,Porteira
+9856,10,Renata Ribeiro,2026-10-05,2493.07,46,Porteira
+9870,10,Renata Ribeiro,2026-10-06,4833.66,49,Porteira
+9884,10,Renata Ribeiro,2026-10-07,5267.65,53,Porteira
+9898,10,Renata Ribeiro,2026-10-08,15663.25,56,Porteira
+9912,10,Renata Ribeiro,2026-10-09,19531.56,80,Porteira
+9926,10,Renata Ribeiro,2026-10-10,954.57,4,Porteira
+9940,10,Renata Ribeiro,2026-10-13,19510.01,53,Porteira
+9954,10,Renata Ribeiro,2026-10-14,2742.99,32,Porteira
+9968,10,Renata Ribeiro,2026-10-15,31397.95,70,Porteira
+10010,10,Renata Ribeiro,2026-10-16,16864.30,50,Porteira
+10024,10,Renata Ribeiro,2026-10-17,8670.53,59,Porteira
+10052,10,Renata Ribeiro,2026-10-19,40711.10,85,Porteira
+10080,10,Renata Ribeiro,2026-10-20,5441.23,55,Porteira
+10094,10,Renata Ribeiro,2026-10-21,7085.37,38,Porteira
+10122,10,Renata Ribeiro,2026-10-22,3657.92,36,Porteira
+10150,10,Renata Ribeiro,2026-10-23,14466.22,43,Porteira
+10164,10,Renata Ribeiro,2026-10-24,15898.89,65,Porteira
+10192,10,Renata Ribeiro,2026-10-26,3268.25,37,Porteira
+10206,10,Renata Ribeiro,2026-10-27,19747.69,45,Porteira
+10220,10,Renata Ribeiro,2026-10-28,11797.55,63,Porteira
+10248,10,Renata Ribeiro,2026-10-29,3721.80,34,Porteira
+8275,11,Taina Santos,2026-09-01,3060.55,67,Porteira
+8314,11,Taina Santos,2026-09-02,6466.60,30,Porteira
+8340,11,Taina Santos,2026-09-03,2065.91,34,Porteira
+8424,11,Taina Santos,2026-09-04,3885.87,66,Porteira
+8463,11,Taina Santos,2026-09-05,334.60,7,Porteira
+8489,11,Taina Santos,2026-09-08,2808.95,68,Porteira
+8515,11,Taina Santos,2026-09-09,3000.85,57,Porteira
+8541,11,Taina Santos,2026-09-10,3120.01,55,Porteira
+8567,11,Taina Santos,2026-09-11,8652.70,60,Porteira
+8593,11,Taina Santos,2026-09-12,3577.78,73,Porteira
+8632,11,Taina Santos,2026-09-14,1983.42,51,Porteira
+8645,11,Taina Santos,2026-09-15,2849.54,46,Porteira
+8681,11,Taina Santos,2026-09-16,2425.61,49,Porteira
+8728,11,Taina Santos,2026-09-17,4741.68,46,Porteira
+8840,11,Taina Santos,2026-09-18,3420.30,44,Porteira
+8966,11,Taina Santos,2026-09-19,11341.89,61,Porteira
+8994,11,Taina Santos,2026-09-21,3603.82,59,Porteira
+9008,11,Taina Santos,2026-09-22,4967.85,55,Porteira
+9085,11,Taina Santos,2026-09-23,2470.80,42,Porteira
+9099,11,Taina Santos,2026-09-24,2060.56,27,Porteira
+9241,11,Taina Santos,2026-09-25,3953.84,72,Porteira
+9248,11,Taina Santos,2026-09-26,3890.72,70,Porteira
+9396,11,Taina Santos,2026-09-28,2938.59,61,Porteira
+9419,11,Taina Santos,2026-09-29,2431.38,68,Porteira
+9433,11,Taina Santos,2026-09-30,5018.58,95,Porteira
+9633,11,Taina Santos,2026-10-01,3898.22,46,Porteira
+9831,11,Taina Santos,2026-10-02,2034.70,59,Porteira
+9845,11,Taina Santos,2026-10-03,5174.20,57,Porteira
+9859,11,Taina Santos,2026-10-05,7923.34,79,Porteira
+9873,11,Taina Santos,2026-10-06,6878.50,71,Porteira
+9887,11,Taina Santos,2026-10-07,2648.34,71,Porteira
+9901,11,Taina Santos,2026-10-08,2446.71,56,Porteira
+9915,11,Taina Santos,2026-10-09,4829.17,65,Porteira
+9929,11,Taina Santos,2026-10-10,3259.43,68,Porteira
+9943,11,Taina Santos,2026-10-13,18485.57,72,Porteira
+9957,11,Taina Santos,2026-10-14,2052.61,40,Porteira
+9971,11,Taina Santos,2026-10-15,1980.48,35,Porteira
+10013,11,Taina Santos,2026-10-16,2809.35,27,Porteira
+10027,11,Taina Santos,2026-10-17,6075.78,60,Porteira
+10055,11,Taina Santos,2026-10-19,777.41,41,Porteira
+10083,11,Taina Santos,2026-10-20,9783.05,58,Porteira
+10097,11,Taina Santos,2026-10-21,4311.30,43,Porteira
+10125,11,Taina Santos,2026-10-22,2495.25,43,Porteira
+10153,11,Taina Santos,2026-10-23,2279.50,53,Porteira
+10167,11,Taina Santos,2026-10-24,2732.84,71,Porteira
+10195,11,Taina Santos,2026-10-26,3360.92,38,Porteira
+10209,11,Taina Santos,2026-10-27,2671.50,13,Porteira
+10223,11,Taina Santos,2026-10-28,4949.51,52,Porteira
+10251,11,Taina Santos,2026-10-29,14957.23,31,Porteira
+8279,22,Tais Bispo,2026-09-01,11038.45,73,Casa de Adubo
+8318,22,Tais Bispo,2026-09-02,8529.57,50,Casa de Adubo
+8344,22,Tais Bispo,2026-09-03,20778.35,62,Casa de Adubo
+8428,22,Tais Bispo,2026-09-04,14117.39,56,Casa de Adubo
+8467,22,Tais Bispo,2026-09-05,12911.96,48,Casa de Adubo
+8493,22,Tais Bispo,2026-09-08,22919.02,109,Casa de Adubo
+8519,22,Tais Bispo,2026-09-09,14295.01,75,Casa de Adubo
+8545,22,Tais Bispo,2026-09-10,8185.84,42,Casa de Adubo
+8571,22,Tais Bispo,2026-09-11,7162.20,65,Casa de Adubo
+8597,22,Tais Bispo,2026-09-12,6195.97,72,Casa de Adubo
+8636,22,Tais Bispo,2026-09-14,15013.60,75,Casa de Adubo
+8649,22,Tais Bispo,2026-09-15,12143.68,90,Casa de Adubo
+8684,22,Tais Bispo,2026-09-16,10178.44,68,Casa de Adubo
+8732,22,Tais Bispo,2026-09-17,16691.41,60,Casa de Adubo
+8929,22,Tais Bispo,2026-09-18,17999.64,66,Casa de Adubo
+8970,22,Tais Bispo,2026-09-19,6074.13,22,Casa de Adubo
+8998,22,Tais Bispo,2026-09-21,6407.77,57,Casa de Adubo
+9019,22,Tais Bispo,2026-09-22,2495.20,20,Casa de Adubo
+9089,22,Tais Bispo,2026-09-23,8427.58,51,Casa de Adubo
+9103,22,Tais Bispo,2026-09-24,10053.11,64,Casa de Adubo
+9378,22,Tais Bispo,2026-09-25,22166.16,66,Casa de Adubo
+9385,22,Tais Bispo,2026-09-26,4709.01,50,Casa de Adubo
+9400,22,Tais Bispo,2026-09-28,5410.18,74,Casa de Adubo
+9409,22,Tais Bispo,2026-09-29,7864.92,50,Casa de Adubo
+9436,22,Tais Bispo,2026-09-30,5696.65,53,Casa de Adubo
+9797,22,Tais Bispo,2026-10-01,2491.21,36,Casa de Adubo
+9835,22,Tais Bispo,2026-10-02,7491.82,25,Casa de Adubo
+9849,22,Tais Bispo,2026-10-03,3748.48,44,Casa de Adubo
+9863,22,Tais Bispo,2026-10-05,20545.58,74,Casa de Adubo
+9877,22,Tais Bispo,2026-10-06,53392.10,67,Casa de Adubo
+9891,22,Tais Bispo,2026-10-07,8863.57,62,Casa de Adubo
+9905,22,Tais Bispo,2026-10-08,8722.45,41,Casa de Adubo
+9919,22,Tais Bispo,2026-10-09,13220.26,68,Casa de Adubo
+9933,22,Tais Bispo,2026-10-10,14689.47,60,Casa de Adubo
+9947,22,Tais Bispo,2026-10-13,7654.22,65,Casa de Adubo
+9961,22,Tais Bispo,2026-10-14,9039.58,37,Casa de Adubo
+9975,22,Tais Bispo,2026-10-15,9792.91,54,Casa de Adubo
+10017,22,Tais Bispo,2026-10-16,6708.71,28,Casa de Adubo
+10031,22,Tais Bispo,2026-10-17,18882.87,67,Casa de Adubo
+10059,22,Tais Bispo,2026-10-19,3167.14,36,Casa de Adubo
+10087,22,Tais Bispo,2026-10-20,4780.78,30,Casa de Adubo
+10101,22,Tais Bispo,2026-10-21,7594.10,33,Casa de Adubo
+10129,22,Tais Bispo,2026-10-22,10409.24,36,Casa de Adubo
+10157,22,Tais Bispo,2026-10-23,6920.28,64,Casa de Adubo
+10171,22,Tais Bispo,2026-10-24,3994.09,33,Casa de Adubo
+10199,22,Tais Bispo,2026-10-26,7699.11,47,Casa de Adubo
+10213,22,Tais Bispo,2026-10-27,20287.22,61,Casa de Adubo
+10227,22,Tais Bispo,2026-10-28,13481.68,35,Casa de Adubo
+10255,22,Tais Bispo,2026-10-29,7881.08,35,Casa de Adubo
+8271,12,Tamires Larceda,2026-09-01,13111.45,117,Porteira
+8310,12,Tamires Larceda,2026-09-02,10363.51,131,Porteira
+8336,12,Tamires Larceda,2026-09-03,4253.23,86,Porteira
+8420,12,Tamires Larceda,2026-09-04,13819.01,140,Porteira
+8459,12,Tamires Larceda,2026-09-05,10496.07,151,Porteira
+8485,12,Tamires Larceda,2026-09-08,15058.77,162,Porteira
+8511,12,Tamires Larceda,2026-09-09,5804.87,107,Porteira
+8537,12,Tamires Larceda,2026-09-10,12156.04,108,Porteira
+8563,12,Tamires Larceda,2026-09-11,9760.01,113,Porteira
+8589,12,Tamires Larceda,2026-09-12,11109.40,145,Porteira
+8628,12,Tamires Larceda,2026-09-14,9794.32,114,Porteira
+8641,12,Tamires Larceda,2026-09-15,9580.82,104,Porteira
+8677,12,Tamires Larceda,2026-09-16,4034.96,67,Porteira
+8724,12,Tamires Larceda,2026-09-17,6587.10,88,Porteira
+8836,12,Tamires Larceda,2026-09-18,8846.16,122,Porteira
+8962,12,Tamires Larceda,2026-09-19,12183.87,136,Porteira
+8990,12,Tamires Larceda,2026-09-21,10713.72,107,Porteira
+9004,12,Tamires Larceda,2026-09-22,27191.99,139,Porteira
+9081,12,Tamires Larceda,2026-09-23,5286.25,105,Porteira
+9095,12,Tamires Larceda,2026-09-24,7477.29,82,Porteira
+9237,12,Tamires Larceda,2026-09-25,10830.14,117,Porteira
+9244,12,Tamires Larceda,2026-09-26,11226.50,124,Porteira
+9392,12,Tamires Larceda,2026-09-28,7928.51,117,Porteira
+9406,12,Tamires Larceda,2026-09-29,1970.50,28,Porteira
+9429,12,Tamires Larceda,2026-09-30,7825.26,99,Porteira
+9629,12,Tamires Larceda,2026-10-01,11088.31,118,Porteira
+9827,12,Tamires Larceda,2026-10-02,8153.91,109,Porteira
+9841,12,Tamires Larceda,2026-10-03,10271.98,134,Porteira
+9855,12,Tamires Larceda,2026-10-05,6897.75,117,Porteira
+9869,12,Tamires Larceda,2026-10-06,1111.88,14,Porteira
+9883,12,Tamires Larceda,2026-10-07,12508.51,121,Porteira
+9897,12,Tamires Larceda,2026-10-08,3892.13,92,Porteira
+9911,12,Tamires Larceda,2026-10-09,8375.87,116,Porteira
+9925,12,Tamires Larceda,2026-10-10,12530.27,123,Porteira
+9939,12,Tamires Larceda,2026-10-13,15189.61,120,Porteira
+9953,12,Tamires Larceda,2026-10-14,22676.27,114,Porteira
+9967,12,Tamires Larceda,2026-10-15,17663.01,115,Porteira
+10009,12,Tamires Larceda,2026-10-16,7071.14,67,Porteira
+10023,12,Tamires Larceda,2026-10-17,8977.24,128,Porteira
+10051,12,Tamires Larceda,2026-10-19,9748.11,117,Porteira
+10079,12,Tamires Larceda,2026-10-20,9962.60,98,Porteira
+10093,12,Tamires Larceda,2026-10-21,5072.50,86,Porteira
+10121,12,Tamires Larceda,2026-10-22,6888.19,111,Porteira
+10149,12,Tamires Larceda,2026-10-23,13037.58,80,Porteira
+10163,12,Tamires Larceda,2026-10-24,7108.23,106,Porteira
+10191,12,Tamires Larceda,2026-10-26,8678.11,97,Porteira
+10205,12,Tamires Larceda,2026-10-27,50599.17,91,Porteira
+10219,12,Tamires Larceda,2026-10-28,15339.85,85,Porteira
+10247,12,Tamires Larceda,2026-10-29,13924.48,107,Porteira
