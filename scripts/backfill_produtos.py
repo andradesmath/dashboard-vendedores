@@ -52,14 +52,17 @@ from sgi_relatorio import casar_produtos_vendedores, parse_relatorio_produtos_pd
 # como este arquivo também está em scripts/, o Python acha o módulo direto.
 from sync_sgi import (  # noqa: E402
     LOJA_PARA_EMPRESA_ENV,
+    PeriodoDivergente,
     _salvar_debug,
     _sincronizar_vendas_diarias,
     abrir_aba_totais_de_vendas,
+    executar_lojas_em_paralelo,
     fazer_login,
+    gerar_pdf_produtos_validado,
     gerar_pdf_totais_de_vendas,
-    gerar_pdf_totais_de_vendas_por_produto,
     navegar_ate_totais_de_vendas_por_produto,
     obter_lojas_configuradas,
+    sincronizar_loja,
 )
 
 from playwright.sync_api import sync_playwright  # noqa: E402
@@ -136,60 +139,67 @@ def backfill_loja(playwright, loja, hoje, headed=False, intervalo_especifico=Non
     senha = os.environ["SGI_SENHA"]
     empresa_texto = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
 
-    print(f"[{loja}] Login...")
-    browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
-    try:
-        aba_vendas = abrir_aba_totais_de_vendas(page, context)
-        navegar_ate_totais_de_vendas_por_produto(page)
-        _salvar_debug(page, loja, "backfill_form_antes")
+    # ---- Dia a dia (período específico, ou o mês atual): delega pra MESMA rotina da
+    # sincronização normal (sync_sgi.sincronizar_loja). Antes este arquivo tinha um
+    # laço próprio que gravava o 'Totais de Vendas' direto, SEM a conversão de
+    # relatório acumulado em valor do dia (_valores_do_dia) nem a validação contra o
+    # relatório por produto — por isso reprocessar um mês pelo painel inflava o
+    # Realizado dos vendedores em centenas de vezes. Agora há um caminho só. ----
+    if intervalo_especifico is not None:
+        ano_ini, mes_ini, ano_fim, mes_fim = intervalo_especifico
+        ultimo_dia_fim = calendar.monthrange(ano_fim, mes_fim)[1]
+        primeiro = date(ano_ini, mes_ini, 1)
+        ultimo = min(date(ano_fim, mes_fim, ultimo_dia_fim), hoje)
+        datas = [primeiro + timedelta(days=n) for n in range((ultimo - primeiro).days + 1)]
+        print(f"[{loja}] Reprocessando {primeiro:%d/%m/%Y} a {ultimo:%d/%m/%Y} ({len(datas)} dia(s))...")
+        sincronizar_loja(playwright, loja, datas, headed=headed)
+        return
 
-        if intervalo_especifico is not None:
-            ano_ini, mes_ini, ano_fim, mes_fim = intervalo_especifico
-            ultimo_dia_fim = calendar.monthrange(ano_fim, mes_fim)[1]
-            dia = date(ano_ini, mes_ini, 1)
-            dia_fim = min(date(ano_fim, mes_fim, ultimo_dia_fim), hoje)
-            while dia <= dia_fim:
-                data_str = dia.strftime("%d/%m/%Y")
-                rotulo = f"{data_str} (dia)"
-                print(f"  [{loja}] gerando relatório de {rotulo}...")
-                pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
-                _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
-                _processar_vendas_liquido(aba_vendas, context, empresa_texto, loja, dia, data_str, data_str, rotulo)
-                dia += timedelta(days=1)
-            return
+    ano_fim_hist, mes_fim_hist = db.mes_anterior(hoje.year, hoje.month)
 
-        ano_fim_hist, mes_fim_hist = db.mes_anterior(hoje.year, hoje.month)
+    # ---- Histórico mensal: set/2025 até o mês anterior ao atual (um relatório por
+    # mês inteiro, guardado no dia 1º) ----
+    if (INICIO_HISTORICO_ANO, INICIO_HISTORICO_MES) <= (ano_fim_hist, mes_fim_hist):
+        print(f"[{loja}] Login...")
+        browser, context, page = fazer_login(playwright, loja, url_login, login, senha, empresa_texto, headed=headed)
+        falhas = []
+        try:
+            aba_vendas = abrir_aba_totais_de_vendas(page, context)
+            navegar_ate_totais_de_vendas_por_produto(page)
+            _salvar_debug(page, loja, "backfill_form_antes")
 
-        # ---- Histórico mensal: set/2025 até o mês anterior ao atual ----
-        if (INICIO_HISTORICO_ANO, INICIO_HISTORICO_MES) <= (ano_fim_hist, mes_fim_hist):
             for ano, mes in _gerar_meses(INICIO_HISTORICO_ANO, INICIO_HISTORICO_MES, ano_fim_hist, mes_fim_hist):
                 ultimo_dia = calendar.monthrange(ano, mes)[1]
                 data_ini_str = date(ano, mes, 1).strftime("%d/%m/%Y")
                 data_fim_str = date(ano, mes, ultimo_dia).strftime("%d/%m/%Y")
                 rotulo = f"{db.MESES_PT[mes]}/{ano} (mês inteiro)"
                 print(f"  [{loja}] gerando relatório de {rotulo}...")
-                pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str)
+                try:
+                    pdf_bytes, _ = gerar_pdf_produtos_validado(
+                        page, context, data_ini_str, data_fim_str, loja=loja
+                    )
+                except PeriodoDivergente as e:
+                    falhas.append(f"{rotulo}: {e}")
+                    print(f"  [{loja}] {rotulo}: PULADO — {e}")
+                    continue
                 _processar_pdf_produtos(loja, date(ano, mes, 1), pdf_bytes, rotulo)
                 _processar_vendas_liquido(
                     aba_vendas, context, empresa_texto, loja, date(ano, mes, 1), data_ini_str, data_fim_str, rotulo
                 )
+        except Exception:
+            _salvar_debug(page, loja, "backfill_erro")
+            raise
+        finally:
+            browser.close()
+        if falhas:
+            raise RuntimeError(
+                f"{len(falhas)} mês(es) NÃO gravado(s) por divergência de período no SGI: " + " | ".join(falhas)
+            )
 
-        # ---- Mês atual: dia a dia, do dia 1º até hoje ----
-        dia = date(hoje.year, hoje.month, 1)
-        while dia <= hoje:
-            data_str = dia.strftime("%d/%m/%Y")
-            rotulo = f"{data_str} (dia)"
-            print(f"  [{loja}] gerando relatório de {rotulo}...")
-            pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
-            _processar_pdf_produtos(loja, dia, pdf_bytes, rotulo)
-            _processar_vendas_liquido(aba_vendas, context, empresa_texto, loja, dia, data_str, data_str, rotulo)
-            dia += timedelta(days=1)
-
-    except Exception:
-        _salvar_debug(page, loja, "backfill_erro")
-        raise
-    finally:
-        browser.close()
+    # ---- Mês atual: dia a dia, do dia 1º até hoje ----
+    primeiro = date(hoje.year, hoje.month, 1)
+    datas = [primeiro + timedelta(days=n) for n in range((hoje - primeiro).days + 1)]
+    sincronizar_loja(playwright, loja, datas, headed=headed)
 
 
 def main():
@@ -216,6 +226,10 @@ def main():
         help="Mês final do período, 1-12 (default: igual a --mes).",
     )
     parser.add_argument("--headed", action="store_true", help="Abre o navegador visível (só faz sentido local).")
+    parser.add_argument(
+        "--sequencial", action="store_true",
+        help="Roda as lojas uma depois da outra (padrão: em paralelo, um processo por loja).",
+    )
     args = parser.parse_args()
 
     intervalo_especifico = None
@@ -232,6 +246,15 @@ def main():
             "SGI_EMPRESA_CASA_ADUBO (ou passe --loja)."
         )
         sys.exit(1)
+
+    if len(lojas) > 1 and not args.sequencial and not args.headed:
+        argv_extra = [a for a in sys.argv[1:] if a != "--sequencial"]
+        falhas_lojas = executar_lojas_em_paralelo(os.path.abspath(__file__), lojas, argv_extra)
+        if falhas_lojas:
+            print("\nFalhas nessa execução: " + ", ".join(falhas_lojas))
+            sys.exit(1)
+        print("\nBackfill concluído sem erros.")
+        return
 
     erros = []
     with sync_playwright() as playwright:

@@ -694,6 +694,40 @@ def upsert_venda(vendedor_id, data_venda, valor_realizado, qtd_pedidos):
     limpar_cache()
 
 
+def limpar_vendas_dia_loja(loja, data_venda, manter_vendedor_ids=(), tabelas=("vendas_produtos_diarias", "vendas_diarias")):
+    """Apaga o dia `data_venda` dos vendedores da `loja` que NÃO estão em
+    `manter_vendedor_ids`, nas `tabelas` informadas (vendas_diarias e/ou
+    vendas_produtos_diarias). Usado no reprocessamento de um período a partir do SGI:
+    um vendedor que não aparece no relatório do dia (domingo, folga) não é
+    sobrescrito pelo upsert, então um valor errado de uma sincronização anterior
+    ficaria pra sempre no painel. Só chamar quando o relatório do dia foi validado.
+    Retorna quantas linhas de vendas_diarias foram apagadas."""
+    permitidas = {"vendas_produtos_diarias", "vendas_diarias"}
+    if not set(tabelas) <= permitidas:
+        raise ValueError(f"tabelas inválidas: {set(tabelas) - permitidas}")
+    data_str = data_venda.isoformat() if hasattr(data_venda, "isoformat") else data_venda
+    manter = [int(v) for v in manter_vendedor_ids] or [-1]  # lista vazia em IN () não é válida
+    apagadas = 0
+    with get_engine().begin() as conn:
+        for tabela in tabelas:
+            resultado = conn.execute(
+                text(
+                    f"""
+                    DELETE FROM {tabela} t
+                    USING vendedores v
+                    WHERE v.id = t.vendedor_id AND t.data = :data
+                      AND COALESCE(t.loja, v.loja) = :loja
+                      AND t.vendedor_id NOT IN :manter
+                    """
+                ).bindparams(bindparam("manter", expanding=True)),
+                {"data": data_str, "loja": loja, "manter": manter},
+            )
+            if tabela == "vendas_diarias":
+                apagadas = resultado.rowcount or 0
+    limpar_cache()
+    return apagadas
+
+
 def upsert_venda_valor(vendedor_id, data_venda, valor_realizado):
     """Lança/atualiza só o valor vendido do dia, sem mexer na quantidade de pedidos
     já registrada (se o dia ainda não existir, cria com 0 pedidos)."""

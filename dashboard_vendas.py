@@ -947,16 +947,20 @@ with tab_lancamentos:
         if not intervalo_invalido_bf and disparar_bf:
             try:
                 loja_bf_param = None if loja_bf == "Ambas" else loja_bf
-                disparado_em_bf = github_actions.disparar_backfill_mes(
-                    int(ano_ini_bf), int(mes_ini_bf),
+                # Reprocessa pelo MESMO workflow da sincronização normal (sync_sgi.yml com
+                # data + data_fim): ele converte o relatório acumulado do SGI em valor do
+                # dia e valida contra o relatório por produto. O workflow de backfill antigo
+                # gravava o acumulado como se fosse o valor de cada dia (Realizado inflado).
+                disparado_em_bf = github_actions.disparar_sincronizacao(
                     loja=loja_bf_param,
-                    ano_fim=int(ano_fim_bf), mes_fim=int(mes_fim_bf),
+                    data=data_ini_bf.strftime("%d/%m/%Y"),
+                    data_fim=data_fim_bf.strftime("%d/%m/%Y"),
                 )
                 status_placeholder_bf = st.empty()
                 with st.spinner(f"Puxando {rotulo_periodo_bf.replace('**', '')} do SGI, dia a dia..."):
                     sucesso_bf, url_run_bf = github_actions.aguardar_conclusao(
                         disparado_em_bf,
-                        workflow_arquivo=github_actions.WORKFLOW_BACKFILL_PRODUTOS,
+                        workflow_arquivo=github_actions.WORKFLOW_SYNC_DIARIO,
                         callback_status=status_placeholder_bf.caption,
                     )
                 if sucesso_bf:

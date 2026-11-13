@@ -53,6 +53,7 @@ Uso:
 import argparse
 import base64
 import os
+import subprocess
 import sys
 from datetime import date, datetime, timedelta
 
@@ -203,6 +204,38 @@ def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="
             campo.press("Control+A")
             campo.press_sequentially(valor, delay=30)
             campo.press("Tab")
+
+        # CONFERE o que ficou nos campos (antes assumia que a digitação tinha pegado).
+        # Num range de datas encadeado (início/fim), o plugin pode reajustar o campo
+        # final ao mexer no inicial, e o relatório sairia de outro período sem
+        # ninguém perceber. Se não bater, tenta setar direto pelo plugin/eventos.
+        def _valores_atuais():
+            return campo_ini.first.input_value().strip(), campo_fim.first.input_value().strip()
+
+        if _valores_atuais() != (data_ini_str, data_fim_str):
+            page.evaluate(
+                """([vi, vf]) => {
+                    const setar = (nome, v) => {
+                        const el = document.querySelector(`input[name='${nome}']`);
+                        if (!el) return;
+                        if (window.jQuery && window.jQuery.fn && window.jQuery.fn.datepicker) {
+                            try { window.jQuery(el).datepicker('update', v); } catch (e) {}
+                        }
+                        el.value = v;
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    };
+                    setar('data_inicial', vi);
+                    setar('data_final', vf);
+                }""",
+                [data_ini_str, data_fim_str],
+            )
+            page.wait_for_timeout(300)
+        atuais = _valores_atuais()
+        if atuais != (data_ini_str, data_fim_str):
+            print(f"  [aviso] campos de período ficaram {atuais} em vez de "
+                  f"{(data_ini_str, data_fim_str)}.")
+            return False
         return True
 
     ok_ini = _preencher_por_label_ou_placeholder(page, [rotulo_ini], data_ini_str)
@@ -222,48 +255,92 @@ def _preencher_data_inicial_final(page, data_ini_str, data_fim_str, rotulo_ini="
     return False
 
 
-def _capturar_pdf_via_clique(page, context, botao):
-    """Clica no botão que gera o relatório (PDF/Imprimir) e captura os bytes do PDF
-    resultante, tentando 3 estratégias em ordem (o comportamento exato não pôde ser
-    verificado ao vivo, então cobrimos os 3 jeitos mais comuns desse tipo de sistema
-    legado):
-      A) o clique dispara um download de verdade;
-      B) o clique abre uma NOVA ABA com o PDF (visualizador do Chrome ou uma URL
-         que responde application/pdf);
-      C) a resposta do clique é interceptada como resposta de rede com
-         content-type PDF, sem abrir aba nova nem virar "download"."""
-    try:
-        with page.expect_download(timeout=10000) as download_info:
-            botao.click()
-        caminho_tmp = download_info.value.path()
-        with open(caminho_tmp, "rb") as f:
-            return f.read()
-    except PlaywrightTimeoutError:
-        pass
+def _pdf_por_download(page, context, botao, timeout_ms):
+    with page.expect_download(timeout=timeout_ms) as download_info:
+        botao.click()
+    with open(download_info.value.path(), "rb") as f:
+        return f.read()
 
+
+def _pdf_por_nova_aba(page, context, botao, timeout_ms):
+    with context.expect_page(timeout=timeout_ms) as nova_pagina_info:
+        botao.click()
+    nova_pagina = nova_pagina_info.value
     try:
-        with context.expect_page(timeout=10000) as nova_pagina_info:
-            botao.click()
-        nova_pagina = nova_pagina_info.value
         nova_pagina.wait_for_load_state("domcontentloaded", timeout=30000)
         resposta = nova_pagina.request.get(nova_pagina.url) if hasattr(nova_pagina, "request") else None
-        conteudo = resposta.body() if resposta is not None else nova_pagina.pdf()
-        # Fecha a aba nova — importante no backfill histórico, que gera dezenas de
-        # relatórios em sequência na mesma sessão; sem fechar, as abas se acumulam.
+        return resposta.body() if resposta is not None else nova_pagina.pdf()
+    finally:
+        # Fecha a aba nova — no backfill dezenas de relatórios saem em sequência na
+        # mesma sessão; sem fechar, as abas se acumulam.
         try:
             nova_pagina.close()
         except Exception:
             pass
-        return conteudo
-    except PlaywrightTimeoutError:
-        pass
 
+
+def _pdf_por_resposta(page, context, botao, timeout_ms):
     with page.expect_response(
         lambda r: "pdf" in (r.headers.get("content-type", "").lower()) or r.url.lower().endswith(".pdf"),
-        timeout=15000,
+        timeout=max(timeout_ms, 15000),
     ) as resposta_info:
         botao.click()
     return resposta_info.value.body()
+
+
+_ESTRATEGIAS_PDF = {
+    "download": _pdf_por_download,
+    "nova_aba": _pdf_por_nova_aba,
+    "resposta": _pdf_por_resposta,
+}
+# Lembra qual estratégia funcionou na última captura. Antes cada relatório tentava
+# A (download, 10s de espera) -> B -> C do zero; se o SGI abre uma aba nova (B), TODO
+# relatório gastava 10s esperando um download que nunca vinha — e ainda clicava duas
+# vezes (deixando abas sobrando). Num mês inteiro, dia a dia, isso eram minutos
+# jogados fora. Agora a estratégia que deu certo vira a primeira tentativa.
+_ESTRATEGIA_PDF_OK = {"nome": None}
+
+
+def _fechar_abas_extras(context, manter):
+    """Fecha abas que sobraram de um clique que não era a estratégia certa. `manter`:
+    abas que devem continuar abertas (a principal e a de 'Totais de Vendas')."""
+    for p in list(context.pages):
+        if p not in manter:
+            try:
+                p.close()
+            except Exception:
+                pass
+
+
+def _capturar_pdf_via_clique(page, context, botao):
+    """Clica no botão que gera o relatório (PDF/Imprimir) e captura os bytes do PDF
+    resultante. O comportamento exato do SGI não pôde ser verificado ao vivo, então
+    cobre os 3 jeitos mais comuns desse tipo de sistema legado:
+      download) o clique dispara um download de verdade;
+      nova_aba) o clique abre uma NOVA ABA com o PDF;
+      resposta) a resposta do clique é interceptada como resposta de rede com
+         content-type PDF, sem abrir aba nova nem virar "download".
+    A estratégia que funcionou da última vez é tentada primeiro."""
+    ordem = list(_ESTRATEGIAS_PDF)
+    conhecida = _ESTRATEGIA_PDF_OK["nome"]
+    if conhecida in ordem:
+        ordem.remove(conhecida)
+        ordem.insert(0, conhecida)
+
+    abas_antes = list(context.pages)
+    ultimo_erro = None
+    for nome in ordem:
+        # Estratégia já comprovada: espera folgada. Ainda sem comprovar: só 10s pra
+        # descobrir logo se é essa ou a próxima.
+        timeout_ms = 30000 if nome == conhecida else 10000
+        try:
+            conteudo = _ESTRATEGIAS_PDF[nome](page, context, botao, timeout_ms)
+            _ESTRATEGIA_PDF_OK["nome"] = nome
+            return conteudo
+        except PlaywrightTimeoutError as e:
+            ultimo_erro = e
+            _fechar_abas_extras(context, abas_antes)
+    raise ultimo_erro
 
 
 # --------------------------------------------------------------------------
@@ -436,6 +513,44 @@ def gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim
     return _capturar_pdf_via_clique(page, context, botao_imprimir)
 
 
+class PeriodoDivergente(Exception):
+    """O SGI gerou um relatório de um período diferente do pedido."""
+
+
+def gerar_pdf_produtos_validado(page, context, data_ini_str, data_fim_str, tentativas=3, loja=None):
+    """Como gerar_pdf_totais_de_vendas_por_produto, mas CONFERE o período impresso no
+    cabeçalho do PDF contra o pedido (o 'Totais de Vendas' já era validado; este não)
+    e tenta de novo, recarregando o formulário, se divergir. Se continuar divergindo,
+    levanta PeriodoDivergente — NUNCA devolve um relatório de outro período, que seria
+    gravado como se fosse do dia pedido.
+
+    Retorna (pdf_bytes, periodo_confirmado). periodo_confirmado=False quando o PDF
+    não traz o cabeçalho de período (não dá pra validar)."""
+    esperado = (datetime.strptime(data_ini_str, "%d/%m/%Y").date(), datetime.strptime(data_fim_str, "%d/%m/%Y").date())
+    ultimo = None
+    for tentativa in range(1, tentativas + 1):
+        pdf_bytes = gerar_pdf_totais_de_vendas_por_produto(page, context, data_ini_str, data_fim_str)
+        r = parse_relatorio_produtos_pdf(pdf_bytes)
+        ini, fim = r.get("data_ini"), r.get("data_fim")
+        if ini is None or fim is None:
+            print("  [aviso] PDF 'Por Produto' sem cabeçalho de período — não foi possível validar o período.")
+            return pdf_bytes, False
+        if (ini, fim) == esperado:
+            return pdf_bytes, True
+
+        ultimo = f"'Por Produto' pedido {data_ini_str} a {data_fim_str}, veio {ini:%d/%m/%Y} a {fim:%d/%m/%Y}"
+        print(f"  [aviso] período divergente (tentativa {tentativa}/{tentativas}): {ultimo}")
+        if loja:
+            _salvar_debug(page, loja, f"periodo_divergente_{tentativa}")
+        if tentativa < tentativas:
+            try:
+                navegar_ate_totais_de_vendas_por_produto(page)  # recarrega o formulário limpo
+            except Exception:
+                pass
+            page.wait_for_timeout(1000 * tentativa)
+    raise PeriodoDivergente(ultimo)
+
+
 def abrir_aba_totais_de_vendas(page, context):
     """Abre uma SEGUNDA aba (mesma sessão logada) já no formulário 'Totais de
     Vendas', pra alternar entre os dois relatórios sem renavegar pelos menus a cada
@@ -509,7 +624,7 @@ def _valores_do_dia(linhas, pdf_anterior, ref_produtos):
     return out, modo
 
 
-def _sincronizar_vendas_diarias(loja, dia, pdf_bytes, pdf_anterior=None, ref_produtos=None):
+def _sincronizar_vendas_diarias(loja, dia, pdf_bytes, pdf_anterior=None, ref_produtos=None, limpar_ausentes=False):
     """Grava em vendas_diarias o T. LIQ. (líquido) e o Nº Ped REAIS de cada
     vendedor, vindos do relatório 'Totais de Vendas'. É a fonte oficial do
     Realizado/Pedidos do painel. Valida o valor contra o relatório por produto do
@@ -530,22 +645,32 @@ def _sincronizar_vendas_diarias(loja, dia, pdf_bytes, pdf_anterior=None, ref_pro
               + ", ".join(nao_encontrados))
 
     valores, modo = _valores_do_dia(resultado["linhas"], pdf_anterior, ref_produtos)
-    total, gravados = 0.0, 0
+    total, gravados, ids_gravados = 0.0, 0, []
     for item in matched:
         k = normalizar_nome_match(item["nome"])
         if k not in valores:
             continue
         v, q, _origem = valores[k]
         db.upsert_venda(item["vendedor_id"], dia, float(v), int(q))
+        ids_gravados.append(item["vendedor_id"])
         total += v
         gravados += 1
+
+    if limpar_ausentes:
+        # Reprocessamento de período: vendedor sem venda no dia não é sobrescrito pelo
+        # upsert, então um valor errado (ex.: acumulado) de uma sincronização anterior
+        # ficaria no painel. O SGI é a fonte oficial: o que ele não traz no dia sai.
+        apagadas = db.limpar_vendas_dia_loja(loja, dia, ids_gravados, tabelas=("vendas_diarias",))
+        if apagadas:
+            print(f"[{loja}] {dia:%d/%m/%Y}: {apagadas} lançamento(s) antigo(s) de vendedor(es) sem "
+                  "venda no dia removido(s) de vendas_diarias.")
 
     print(f"[{loja}] {dia:%d/%m/%Y}: {gravados} vendedor(es) — líquido R$ {total:,.2f} "
           f"(modo {modo}; vendas_diarias atualizado a partir de 'Totais de Vendas').")
     return gravados
 
 
-def _sincronizar_vendas_produtos(loja, dia, pdf_bytes):
+def _sincronizar_vendas_produtos(loja, dia, pdf_bytes, limpar_ausentes=False):
     """Faz o parse de 'Totais de Vendas Por Produto' e grava SÓ o detalhe por
     produto/marca (vendas_produtos_diarias). NÃO toca em vendas_diarias: o 'Valor
     Total' desse relatório não é o líquido — o Realizado vem de
@@ -569,6 +694,8 @@ def _sincronizar_vendas_produtos(loja, dia, pdf_bytes):
         por_vendedor.setdefault(item["vendedor_id"], []).append(item)
     for vendedor_id, produtos in por_vendedor.items():
         db.upsert_vendas_produtos_dia(vendedor_id, dia, produtos)
+    if limpar_ausentes:
+        db.limpar_vendas_dia_loja(loja, dia, list(por_vendedor), tabelas=("vendas_produtos_diarias",))
 
     print(f"[{loja}] {dia:%d/%m/%Y}: {len(matched)} produto(s) de {len(por_vendedor)} vendedor(es) "
           "gravados em vendas_produtos_diarias.")
@@ -592,6 +719,7 @@ def sincronizar_loja(playwright, loja, datas, headed=False):
         navegar_ate_totais_de_vendas_por_produto(page)
 
         cache_pdf = {}
+        reprocessando = len(datas) > 1  # --data-fim: SGI é a fonte da verdade, limpa o que ele não traz
 
         def _pdf_vendas(d):
             if d not in cache_pdf:
@@ -619,7 +747,7 @@ def sincronizar_loja(playwright, loja, datas, headed=False):
             except Exception as e:
                 print(f"[{loja}] aviso: não obtive o relatório do dia anterior ({e}).")
             try:
-                pdf_produtos = gerar_pdf_totais_de_vendas_por_produto(page, context, data_str, data_str)
+                pdf_produtos, _ = gerar_pdf_produtos_validado(page, context, data_str, data_str, loja=loja)
                 with open(f"debug_{loja.replace(' ', '_')}_produtos_{sufixo}.pdf", "wb") as f:
                     f.write(pdf_produtos)
             except Exception as e:
@@ -630,13 +758,13 @@ def sincronizar_loja(playwright, loja, datas, headed=False):
             if pdf_vendas is not None:
                 try:
                     ref = _totais_produtos_por_nome(pdf_produtos) if pdf_produtos else None
-                    _sincronizar_vendas_diarias(loja, dia, pdf_vendas, pdf_anterior, ref)
+                    _sincronizar_vendas_diarias(loja, dia, pdf_vendas, pdf_anterior, ref, limpar_ausentes=reprocessando)
                 except Exception as e:
                     erros.append(f"{loja} {data_str} (gravar vendas): {e}")
                     print(f"[{loja}] ERRO ao gravar vendas {data_str}: {e}")
             if pdf_produtos is not None:
                 try:
-                    _sincronizar_vendas_produtos(loja, dia, pdf_produtos)
+                    _sincronizar_vendas_produtos(loja, dia, pdf_produtos, limpar_ausentes=reprocessando)
                 except Exception as e:
                     erros.append(f"{loja} {data_str} (gravar produtos): {e}")
                     print(f"[{loja}] ERRO ao gravar produtos {data_str}: {e}")
@@ -648,8 +776,24 @@ def sincronizar_loja(playwright, loja, datas, headed=False):
         raise RuntimeError(" | ".join(erros))
 
 
+def executar_lojas_em_paralelo(caminho_script, lojas, argv_extra):
+    """Roda cada loja num PROCESSO próprio (cada um com seu navegador e sua sessão
+    logada no SGI), ao mesmo tempo, em vez de uma depois da outra — a duração total
+    cai pra a da loja mais lenta (quase metade com duas lojas). Reaproveitado por
+    scripts/backfill_produtos.py. Retorna a lista de lojas cujo processo falhou."""
+    procs = []
+    for loja in lojas:
+        cmd = [sys.executable, "-u", caminho_script, *argv_extra, "--loja", loja]
+        procs.append((loja, subprocess.Popen(cmd)))
+    return [loja for loja, proc in procs if proc.wait() != 0]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sincroniza vendas de um dia a partir do SGI Solution.")
+    parser.add_argument(
+        "--sequencial", action="store_true",
+        help="Roda as lojas uma depois da outra (padrão: em paralelo, um processo por loja).",
+    )
     parser.add_argument("--loja", choices=list(LOJA_PARA_EMPRESA_ENV.keys()), help="Rodar só uma loja (debug).")
     parser.add_argument(
         "--data", help="Data específica a sincronizar, formato DD/MM/AAAA (padrão: hoje).",
@@ -688,6 +832,15 @@ def main():
             "SGI_EMPRESA_CASA_ADUBO (ou passe --loja)."
         )
         sys.exit(1)
+
+    if len(lojas) > 1 and not args.sequencial and not args.headed:
+        argv_extra = [a for a in sys.argv[1:] if a != "--sequencial"]
+        falhas = executar_lojas_em_paralelo(os.path.abspath(__file__), lojas, argv_extra)
+        if falhas:
+            print("\nFalhas nessa execução: " + ", ".join(falhas))
+            sys.exit(1)
+        print("\nSincronização concluída sem erros.")
+        return
 
     erros = []
     with sync_playwright() as playwright:
