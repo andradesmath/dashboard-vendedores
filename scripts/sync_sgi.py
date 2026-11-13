@@ -636,6 +636,13 @@ def _sincronizar_vendas_diarias(loja, dia, pdf_bytes, pdf_anterior=None, ref_pro
         print(f"[{loja}] {dia:%d/%m/%Y}: nenhuma linha de vendedor em 'Totais de Vendas' "
               "(dia sem vendas ou PDF diferente do esperado; PDF salvo para inspeção). "
               "Nada gravado em vendas_diarias.")
+        if limpar_ausentes:
+            # Reprocessamento de período (relatório já validado): dia vazio no SGI
+            # (domingo/feriado) não pode manter valor antigo/acumulado no painel.
+            apagadas = db.limpar_vendas_dia_loja(loja, dia, [], tabelas=("vendas_diarias",))
+            if apagadas:
+                print(f"[{loja}] {dia:%d/%m/%Y}: {apagadas} lançamento(s) antigo(s) removido(s) de "
+                      "vendas_diarias (dia sem vendas no SGI).")
         return 0
 
     vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
@@ -681,6 +688,8 @@ def _sincronizar_vendas_produtos(loja, dia, pdf_bytes, limpar_ausentes=False):
             f.write(pdf_bytes)
         print(f"[{loja}] {dia:%d/%m/%Y}: nenhum produto reconhecido em 'Totais de Vendas Por "
               "Produto' (PDF salvo para inspeção).")
+        if limpar_ausentes:
+            db.limpar_vendas_dia_loja(loja, dia, [], tabelas=("vendas_produtos_diarias",))
         return
 
     vendedores_df = db.get_vendedores(loja=loja, apenas_ativos=True)
