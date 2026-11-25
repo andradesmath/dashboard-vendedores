@@ -84,6 +84,7 @@ import streamlit as st
 import db
 import github_actions
 import pdf_export
+import relatorios_vendas as rv
 from sgi_relatorio import casar_vendedores, parse_relatorio_vendas_pdf, parse_valor_brl
 
 # --------------------------------------------------------------------------
@@ -248,8 +249,8 @@ def campos_mix_pagamento(key_prefix):
     return percentuais, soma_informada
 
 
-tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard = st.tabs(
-    ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard"]
+tab_cadastros, tab_metas, tab_lancamentos, tab_dashboard, tab_relatorios = st.tabs(
+    ["📋 Cadastros", "🎯 Metas", "📝 Lançamentos Diários", "📊 Dashboard", "📈 Relatórios de Vendas"]
 )
 
 # ==========================================================================
@@ -3276,3 +3277,83 @@ with tab_dashboard:
     except Exception as e:
         st.error("Não foi possível gerar o relatório estratégico da loja.")
         st.exception(e)
+
+
+# ==========================================================================
+# ABA 5 - RELATÓRIOS DE VENDAS (dia da semana, mês, consolidado)
+# ==========================================================================
+def mostrar_relatorio(df):
+    """Formata para a tela; o download usa o df numérico original."""
+    moeda = ["Total", "Acumulado", "Média por dia", "Lançamento diário", "Importado mensal"]
+    tela = df.copy()
+    for col in tela.columns.intersection(moeda):
+        tela[col] = tela[col].map(lambda v: "-" if pd.isna(v) else db.formatar_moeda(v))
+    if "% acumulado" in tela:
+        tela["% acumulado"] = tela["% acumulado"].map(lambda v: f"{v:.1f}%".replace(".", ","))
+    st.dataframe(tela, use_container_width=True, hide_index=True)
+
+
+def grafico_barras(x, y):
+    fig = go.Figure(go.Bar(x=x, y=y, marker_color=AZUL))
+    fig.update_layout(yaxis_title="R$", margin=dict(t=10, b=10), height=340, separators=",.")
+    fig.update_xaxes(type="category")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+with tab_relatorios:
+    c1, c2, c3 = st.columns([2, 1.3, 1.3])
+    loja_rel = c1.selectbox("Loja", ["Ambas"] + db.LOJAS, key="loja_rel")
+    ini_rel = c2.date_input("De", value=date(date.today().year, 1, 1), format="DD/MM/YYYY", key="ini_rel")
+    fim_rel = c3.date_input("Até", value=date.today(), format="DD/MM/YYYY", key="fim_rel")
+
+    if ini_rel > fim_rel:
+        st.error("A data inicial é posterior à final.")
+    else:
+        vendas_rel = db.get_vendas_periodo(ini_rel, fim_rel, loja=loja_rel)
+        manual_rel = db.get_realizado_manual_periodo(ini_rel, fim_rel, loja=loja_rel)
+        if vendas_rel.empty and manual_rel.empty:
+            st.info("Sem vendas no período.")
+        else:
+            criterio = st.radio(
+                "Ordenar dias da semana por", ["Média por dia", "Total"],
+                horizontal=True, key="criterio_rel",
+            )
+            semana = rv.por_dia_semana(vendas_rel, criterio)
+            mensal = rv.por_mes(vendas_rel, manual_rel)
+            geral = rv.consolidado(vendas_rel, manual_rel)
+            datas = rv.por_data(vendas_rel)
+
+            if loja_rel == "Ambas":
+                st.caption(
+                    "Atenção ao comparar: as lojas podem ter começos diferentes no histórico. "
+                    "Confira o período antes de ler tendência."
+                )
+            if not manual_rel.empty:
+                st.caption(
+                    "Há meses com total importado sem data. Ele entra no mensal e no consolidado "
+                    "(mês inteiro), mas não no dia da semana nem nas datas."
+                )
+
+            r_semana, r_mes, r_geral, r_datas = st.tabs(
+                ["Dia da semana", "Por mês", "Consolidado", "Por data"]
+            )
+            with r_semana:
+                mostrar_relatorio(semana)
+                grafico_barras(semana["Dia da semana"], semana[criterio])
+            with r_mes:
+                mostrar_relatorio(mensal)
+                grafico_barras(mensal["Mês"], mensal["Total"])
+            with r_geral:
+                mostrar_relatorio(geral)
+            with r_datas:
+                mostrar_relatorio(datas)
+
+            st.download_button(
+                "⬇️ Baixar os relatórios (Excel)",
+                data=rv.para_excel(
+                    {"Dia da semana": semana, "Por mês": mensal, "Consolidado": geral, "Por data": datas}
+                ),
+                file_name=f"relatorios_vendas_{loja_rel.replace(' ', '_')}_{ini_rel:%Y%m%d}_{fim_rel:%Y%m%d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_relatorios_vendas",
+            )
