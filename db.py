@@ -805,7 +805,7 @@ def get_vendas_mes(ano, mes, loja=None):
 def get_vendas_periodo(ini, fim, loja=None):
     """Vendas diárias entre duas datas (inclusive), para os relatórios."""
     query = """
-        SELECT COALESCE(vd.loja, v.loja) AS loja, vd.data, vd.valor_realizado
+        SELECT COALESCE(vd.loja, v.loja) AS loja, vd.data, vd.valor_realizado, vd.qtd_pedidos
         FROM vendas_diarias vd JOIN vendedores v ON v.id = vd.vendedor_id
         WHERE vd.data BETWEEN :ini AND :fim
     """
@@ -836,6 +836,21 @@ def get_realizado_manual_periodo(ini, fim, loja=None):
     if not df.empty:
         df["valor_realizado"] = df["valor_realizado"].astype(float)
     return df
+
+
+@cache_leitura()
+def get_pedidos_manual_periodo(ini, fim, loja=None):
+    """Pedidos importados como total mensal, nos meses tocados pelo período."""
+    query = """
+        SELECT v.loja, pm.ano, pm.mes, pm.qtd_pedidos
+        FROM pedidos_mensal_manual pm JOIN vendedores v ON v.id = pm.vendedor_id
+        WHERE pm.ano * 100 + pm.mes BETWEEN :ini AND :fim
+    """
+    params = {"ini": ini.year * 100 + ini.month, "fim": fim.year * 100 + fim.month}
+    if loja and loja != "Ambas":
+        query += " AND v.loja = :loja"
+        params["loja"] = loja
+    return pd.read_sql_query(text(query), get_engine(), params=params)
 
 
 @cache_leitura()

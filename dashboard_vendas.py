@@ -3284,18 +3284,24 @@ with tab_dashboard:
 # ==========================================================================
 def mostrar_relatorio(df):
     """Formata para a tela; o download usa o df numérico original."""
-    moeda = ["Total", "Acumulado", "Média por dia", "Lançamento diário", "Importado mensal"]
+    moeda = ["Total", "Acumulado", "Média por dia", "Lançamento diário", "Importado mensal", "Ticket médio"]
     tela = df.copy()
     for col in tela.columns.intersection(moeda):
         tela[col] = tela[col].map(lambda v: "-" if pd.isna(v) else db.formatar_moeda(v))
+    for col in tela.columns.intersection(["Pedidos", "Pedidos acumulados"]):
+        tela[col] = tela[col].map(lambda v: f"{int(v):,}".replace(",", "."))
+    if "Média de pedidos por dia" in tela:
+        tela["Média de pedidos por dia"] = tela["Média de pedidos por dia"].map(
+            lambda v: f"{v:.1f}".replace(".", ",")
+        )
     if "% acumulado" in tela:
         tela["% acumulado"] = tela["% acumulado"].map(lambda v: f"{v:.1f}%".replace(".", ","))
     st.dataframe(tela, use_container_width=True, hide_index=True)
 
 
-def grafico_barras(x, y):
+def grafico_barras(x, y, eixo="R$"):
     fig = go.Figure(go.Bar(x=x, y=y, marker_color=AZUL))
-    fig.update_layout(yaxis_title="R$", margin=dict(t=10, b=10), height=340, separators=",.")
+    fig.update_layout(yaxis_title=eixo, margin=dict(t=10, b=10), height=340, separators=",.")
     fig.update_xaxes(type="category")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -3311,24 +3317,29 @@ with tab_relatorios:
     else:
         vendas_rel = db.get_vendas_periodo(ini_rel, fim_rel, loja=loja_rel)
         manual_rel = db.get_realizado_manual_periodo(ini_rel, fim_rel, loja=loja_rel)
-        if vendas_rel.empty and manual_rel.empty:
+        pedidos_rel = db.get_pedidos_manual_periodo(ini_rel, fim_rel, loja=loja_rel)
+        if vendas_rel.empty and manual_rel.empty and pedidos_rel.empty:
             st.info("Sem vendas no período.")
         else:
+            medida = st.radio(
+                "Medir por", ["Valor (R$)", "Pedidos fechados"], horizontal=True, key="medida_rel",
+            )
+            em_pedidos = medida == "Pedidos fechados"
+            opcoes = ["Média de pedidos por dia", "Pedidos"] if em_pedidos else ["Média por dia", "Total"]
             criterio = st.radio(
-                "Ordenar dias da semana por", ["Média por dia", "Total"],
-                horizontal=True, key="criterio_rel",
+                "Ordenar dias da semana por", opcoes, horizontal=True, key=f"criterio_rel_{em_pedidos}",
             )
             semana = rv.por_dia_semana(vendas_rel, criterio)
-            mensal = rv.por_mes(vendas_rel, manual_rel)
-            geral = rv.consolidado(vendas_rel, manual_rel)
-            datas = rv.por_data(vendas_rel)
+            mensal = rv.por_mes(vendas_rel, manual_rel, pedidos_rel)
+            geral = rv.consolidado(vendas_rel, manual_rel, pedidos_rel)
+            datas = rv.por_data(vendas_rel, "Pedidos" if em_pedidos else "Total")
 
             if loja_rel == "Ambas":
                 st.caption(
                     "Atenção ao comparar: as lojas podem ter começos diferentes no histórico. "
                     "Confira o período antes de ler tendência."
                 )
-            if not manual_rel.empty:
+            if not manual_rel.empty or not pedidos_rel.empty:
                 st.caption(
                     "Há meses com total importado sem data. Ele entra no mensal e no consolidado "
                     "(mês inteiro), mas não no dia da semana nem nas datas."
@@ -3339,10 +3350,13 @@ with tab_relatorios:
             )
             with r_semana:
                 mostrar_relatorio(semana)
-                grafico_barras(semana["Dia da semana"], semana[criterio])
+                grafico_barras(semana["Dia da semana"], semana[criterio], "Pedidos" if em_pedidos else "R$")
             with r_mes:
                 mostrar_relatorio(mensal)
-                grafico_barras(mensal["Mês"], mensal["Total"])
+                grafico_barras(
+                    mensal["Mês"], mensal["Pedidos" if em_pedidos else "Total"],
+                    "Pedidos" if em_pedidos else "R$",
+                )
             with r_geral:
                 mostrar_relatorio(geral)
             with r_datas:
