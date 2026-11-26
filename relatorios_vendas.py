@@ -94,14 +94,16 @@ def por_mes(vendas: pd.DataFrame, manual: pd.DataFrame, pedidos_manual: pd.DataF
             # média só sobre o que tem data; o importado não sabe em quantos dias vendeu
             "Média por dia": d / n if n else None,
             "Pedidos": int(qtd.get(p, 0)) + int(qtd_importada.get(p, 0)),
+            # só lançamento diário: valor e pedidos da mesma fonte
+            "Ticket médio": _ticket(d, int(qtd.get(p, 0))),
         })
     colunas = ["Mês", "Dias com venda", "Lançamento diário", "Importado mensal", "Total",
-               "Média por dia", "Pedidos"]
+               "Média por dia", "Pedidos", "Ticket médio"]
     return _acumular(pd.DataFrame(linhas, columns=colunas))
 
 
 def por_data(vendas: pd.DataFrame, ordenar_por: str = "Total") -> pd.DataFrame:
-    """Todas as datas, em ordem crescente de valor ou de pedidos, com acumulado."""
+    """Todas as datas, em ordem crescente de valor, pedidos ou ticket, com acumulado."""
     dia = totais_por_dia(vendas)
     qtd = pedidos_por_dia(vendas)
     t = pd.DataFrame({
@@ -110,6 +112,7 @@ def por_data(vendas: pd.DataFrame, ordenar_por: str = "Total") -> pd.DataFrame:
         "Total": dia.values,
         "Pedidos": qtd.values,
     })
+    t["Ticket médio"] = [_ticket(v, n) for v, n in zip(t["Total"], t["Pedidos"])]
     return _acumular(t.sort_values(ordenar_por, kind="stable"))
 
 

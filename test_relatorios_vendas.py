@@ -64,3 +64,13 @@ def test_pedidos():
     g = rv.consolidado(VENDAS, MANUAL, PEDIDOS).set_index("Loja")
     assert g.loc["TOTAL", "Pedidos"] == 18
     assert g.loc["TOTAL", "Ticket médio"] == 800 / 11
+
+
+def test_ticket():
+    s = rv.por_dia_semana(VENDAS, "Ticket médio")
+    assert list(s["Dia da semana"]) == ["Segunda", "Sexta"]  # 400/9 contra 200
+    d = rv.por_data(VENDAS, "Ticket médio")
+    assert list(d["Ticket médio"]) == [37.5, 50.0, 200.0]
+    m = rv.por_mes(VENDAS, MANUAL, PEDIDOS)
+    assert pd.isna(m["Ticket médio"].iloc[0])  # mês só com importado
+    assert m["Ticket médio"].iloc[1] == 550 / 6
